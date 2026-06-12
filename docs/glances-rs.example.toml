@@ -1,0 +1,37 @@
+# glances-rs example configuration.
+# Every key is optional; the values below are the built-in defaults unless
+# stated otherwise. Discovery order: --config flag, then GLANCES_RS_CONFIG,
+# then ./glances-rs.toml, then $XDG_CONFIG_HOME/glances-rs/config.toml,
+# then /etc/glances-rs/config.toml (see docs/api.md §7).
+
+[server]
+# Closed by default (ARCHITECTURE.md §7.1): loopback, no password. Binding
+# to a non-loopback address REQUIRES a password, or the server refuses to
+# start. Non-loopback exposure must go through a TLS reverse proxy.
+bind = "127.0.0.1"
+port = 61208
+# password = "change-me"
+
+[security]
+# CORS allow-list of explicit origins. Empty = CORS fully closed.
+cors_origins = []
+# Accepted Host header values.
+trusted_hosts = ["localhost", "127.0.0.1"]
+
+[collect]
+# Default collection period (seconds), overridable per plugin.
+refresh = 2.0
+# A plugin's collector stops after this many refresh periods without a request.
+idle_cycles = 5
+# How long a waking request waits for the first cycle before answering 503.
+guard_timeout = 5.0
+
+# Per-plugin sections (cpu, load, mem, network) — all optional.
+# [plugins.cpu]
+# refresh = 1.0
+#
+# [plugins.network]
+# enabled = true
+# Regex allow/deny lists on the interface name (not defaults — examples):
+# show = ["^eth", "^en"]
+# hide = ["^lo$"]

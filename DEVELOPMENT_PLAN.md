@@ -82,18 +82,18 @@ warm-up constant and config discovery order recorded; spike code removed.
 **Goal:** a server that starts, enforces the §7.1 posture, and answers
 probes — no plugins yet.
 
-- [ ] `config.rs`: typed TOML config (`bind`, `port`, `password`, per-plugin
+- [x] `config.rs`: typed TOML config (`bind`, `port`, `password`, per-plugin
       `refresh`, `idle_timeout`, CORS allow-list, trusted hosts, network
       `show`/`hide` regexes), defaults per ARCHITECTURE
       (bind `127.0.0.1`, refresh 2 s, idle ≈ 5 cycles — §3).
-- [ ] Config discovery per the order frozen in Phase 1.
-- [ ] `server.rs`: axum `Router` construction and startup.
-- [ ] **§7.1 startup check** — the four-case bind/password grid; non-loopback
+- [x] Config discovery per the order frozen in Phase 1.
+- [x] `server.rs`: axum `Router` construction and startup.
+- [x] **§7.1 startup check** — the four-case bind/password grid; non-loopback
       without password is a **hard startup error**. This is the single most
       important security line; it lands before any route does.
-- [ ] `/status` and `/healthz` in a **separate sub-router**, outside all
+- [x] `/status` and `/healthz` in a **separate sub-router**, outside all
       middleware (§6.4) — they must never trigger wake-up nor require auth.
-- [ ] `tracing` initialization (`RUST_LOG`).
+- [x] `tracing` initialization (`RUST_LOG`).
 
 **Tests:** config parsing (defaults, overrides, bad TOML), all four §7.1
 cases (the refusal case asserted as an error), probes respond 200.
