@@ -1,0 +1,31 @@
+[package]
+name = "glances-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+description = "Lightweight monitoring server with a Glances-compatible REST API and a minimal CPU/RAM footprint"
+license = "MIT"
+repository = "https://github.com/nicolargo/glances-rs"
+
+[dependencies]
+async-trait = "0.1.89"
+axum = "0.8.9"
+base64 = "0.22.1"
+constant_time_eq = "0.4.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sysinfo = "0.38.4"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+toml = "1.1.2"
+tower-http = { version = "0.6.11", features = ["cors"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# Footprint-first release profile (ARCHITECTURE.md §9). `panic = "abort"` is a
+# deliberate choice revisited in Phase 7 of DEVELOPMENT_PLAN.md.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

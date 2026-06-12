@@ -31,20 +31,20 @@
 
 **Goal:** a compiling, CI-checked skeleton.
 
-- [ ] `cargo init` — single binary crate, `lib.rs` + tiny `main.rs` (§9).
-- [ ] `Cargo.toml`: dependencies from the §4 stack table
+- [x] `cargo init` — single binary crate, `lib.rs` + tiny `main.rs` (§9).
+- [x] `Cargo.toml`: dependencies from the §4 stack table
       (tokio, axum, tower-http, sysinfo, serde/serde_json, constant_time_eq,
       base64, toml, async-trait, tracing/tracing-subscriber);
       `[profile.release]` block exactly as §9 (including `panic = "abort"`,
       revisited in Phase 7).
-- [ ] Commit `Cargo.lock` (binary crate).
-- [ ] Module skeleton matching the §9 tree (`config`, `server`, `state`,
+- [x] Commit `Cargo.lock` (binary crate).
+- [x] Module skeleton matching the §9 tree (`config`, `server`, `state`,
       `collector`, `api/`, `plugins/`) — empty modules, `run()` returns
       immediately.
-- [ ] CI (GitHub Actions): `cargo fmt --check`, `cargo clippy -- -D warnings`,
+- [x] CI (GitHub Actions): `cargo fmt --check`, `cargo clippy -- -D warnings`,
       `cargo test`, release build, on the three targets
       (Linux primary, macOS, Windows — §1).
-- [ ] Minimal `README.md` (one paragraph + link to ARCHITECTURE.md).
+- [x] Minimal `README.md` (one paragraph + link to ARCHITECTURE.md).
 
 **Exit criteria:** `cargo build` and CI green on all three platforms.
 
