@@ -48,10 +48,10 @@ impl AppState {
         })
     }
 
-    /// Is this plugin served by the API? Implemented in this build *and*
-    /// enabled by the operator (fine-grained exposure).
+    /// Is this plugin served by the API? Enabled by the operator
+    /// (fine-grained exposure: a disabled plugin is absent everywhere).
     pub fn is_registered(&self, id: PluginId) -> bool {
-        PluginId::IMPLEMENTED.contains(&id) && self.config.plugin_enabled(id.as_str())
+        self.config.plugin_enabled(id.as_str())
     }
 
     /// Record "a request for this plugin happened now". Lock-free: called

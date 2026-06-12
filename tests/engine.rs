@@ -103,11 +103,69 @@ async fn unknown_plugin_is_404() {
 }
 
 #[tokio::test]
-async fn contract_plugin_not_yet_implemented_is_404() {
-    // cpu/load/network exist in the contract but land in Phase 4.
+async fn all_contract_plugins_answer_cold_with_real_data() {
     let (router, _) = make_app("");
-    let (status, _) = get(&router, "/api/5/cpu").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Objects for the scalar plugins...
+    for path in ["/api/5/cpu", "/api/5/load", "/api/5/mem"] {
+        let (status, value) = get(&router, path).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(value.is_object(), "{path}: {value}");
+    }
+    // ...an array for the collection plugin.
+    let (status, value) = get(&router, "/api/5/network").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(value.is_array());
+}
+
+#[tokio::test]
+async fn cold_cpu_carries_a_real_rate() {
+    // The §5.5 warm-up promise: the first response is a valid percentage,
+    // not a bogus or empty reading.
+    let (router, _) = make_app("");
+    let (status, value) = get(&router, "/api/5/cpu").await;
+    assert_eq!(status, StatusCode::OK);
+    let total = value["total"].as_f64().unwrap();
+    assert!((0.0..=100.0).contains(&total), "total = {total}");
+    assert!(value["time_since_update"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn cold_network_carries_rates_for_existing_interfaces() {
+    // Same promise for the collection plugin: the self-bootstrap means
+    // the first response already has one item per (visible) interface.
+    let (router, _) = make_app("");
+    let (status, value) = get(&router, "/api/5/network").await;
+    assert_eq!(status, StatusCode::OK);
+    let items = value.as_array().unwrap();
+    assert!(!items.is_empty(), "expected at least one interface");
+    for item in items {
+        for field in [
+            "interface_name",
+            "bytes_recv",
+            "bytes_recv_gauge",
+            "bytes_recv_rate_per_sec",
+            "bytes_sent",
+            "bytes_all",
+            "time_since_update",
+        ] {
+            assert!(!item[field].is_null(), "missing field {field}: {item}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn network_hide_filter_is_applied() {
+    // The container always has a loopback interface; hide it.
+    let (router, _) = make_app("[plugins.network]\nhide = [\"^lo$\"]");
+    let (_, value) = get(&router, "/api/5/network").await;
+    let names: Vec<&str> = value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["interface_name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"lo"), "lo should be hidden: {names:?}");
 }
 
 #[tokio::test]
@@ -118,7 +176,7 @@ async fn disabled_plugin_is_404_and_absent_from_pluginslist() {
 
     let (status, value) = get(&router, "/api/5/pluginslist").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(value, serde_json::json!([]));
+    assert_eq!(value, serde_json::json!(["cpu", "load", "network"]));
 }
 
 #[tokio::test]
@@ -126,7 +184,7 @@ async fn pluginslist_lists_enabled_plugins() {
     let (router, app) = make_app("");
     let (status, value) = get(&router, "/api/5/pluginslist").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(value, serde_json::json!(["mem"]));
+    assert_eq!(value, serde_json::json!(["cpu", "load", "mem", "network"]));
     // pluginslist is names-only: it must not wake anything.
     assert_eq!(app.active_collectors().await, 0);
 }

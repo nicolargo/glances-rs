@@ -8,6 +8,22 @@ pub mod network;
 
 use std::time::Duration;
 
+/// Warm-up delay for rate plugins' self-bootstrap (§5.5): `sysinfo`'s
+/// minimum CPU-refresh interval (200 ms on Linux/macOS/Windows) plus a
+/// margin, because the failure mode at the boundary is *silent* — a too
+/// short delay returns bogus data, not an error (docs/api.md §6).
+pub const RATE_WARMUP: Duration = Duration::from_millis(250);
+
+/// Round to 1 decimal, the Glances convention for percentages and rates.
+pub(crate) fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+/// Round to 3 decimals, used for `time_since_update`.
+pub(crate) fn round3(x: f64) -> f64 {
+    (x * 1000.0).round() / 1000.0
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PluginId {
     Cpu,
@@ -17,17 +33,13 @@ pub enum PluginId {
 }
 
 impl PluginId {
-    /// Every plugin name in the v1 contract.
+    /// Every plugin in the v1 contract — all implemented since Phase 4.
     pub const ALL: [PluginId; 4] = [
         PluginId::Cpu,
         PluginId::Load,
         PluginId::Mem,
         PluginId::Network,
     ];
-
-    /// Plugins implemented so far. Grows to `ALL` in Phase 4; the API
-    /// answers 404 for contract names that are not implemented yet.
-    pub const IMPLEMENTED: [PluginId; 1] = [PluginId::Mem];
 
     pub fn as_str(self) -> &'static str {
         match self {

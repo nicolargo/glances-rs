@@ -1,6 +1,6 @@
 //! `mem` plugin — instantaneous, scalar. Payload shape: docs/api.md §5.1.
 
-use super::{Plugin, PluginId};
+use super::{Plugin, PluginId, round1};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -60,10 +60,6 @@ impl Plugin for MemPlugin {
             "free": state.sys.free_memory(),
         })
     }
-}
-
-fn round1(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
 }
 
 #[cfg(test)]

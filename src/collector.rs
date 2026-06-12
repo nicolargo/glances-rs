@@ -13,7 +13,10 @@
 //! fresh request and keeps running, or it removed itself first and the
 //! request spawns a fresh collector.
 
+use crate::plugins::cpu::CpuPlugin;
+use crate::plugins::load::LoadPlugin;
 use crate::plugins::mem::MemPlugin;
+use crate::plugins::network::NetworkPlugin;
 use crate::plugins::{Plugin, PluginId};
 use crate::state::{AppState, Collector};
 use serde_json::Value;
@@ -32,6 +35,12 @@ pub enum EnsureError {
 /// request waits for the first published cycle (§3.1): the API never
 /// returns null or empty data (§6.2).
 pub async fn ensure_plugin(app: &Arc<AppState>, id: PluginId) -> Result<Value, EnsureError> {
+    // The API layer filters unregistered plugins already; this is defense
+    // in depth at the engine level.
+    if !app.is_registered(id) {
+        return Err(EnsureError::NotRegistered);
+    }
+
     // Bump BEFORE locking the registry — see the race contract above.
     app.touch(id);
 
@@ -41,7 +50,7 @@ pub async fn ensure_plugin(app: &Arc<AppState>, id: PluginId) -> Result<Value, E
             Some(collector) => collector.ready.clone(),
             None => {
                 let (tx, rx) = watch::channel(false);
-                spawn_plugin(app, id, tx)?;
+                spawn_plugin(app, id, tx);
                 collectors.insert(id, Collector { ready: rx.clone() });
                 tracing::debug!(plugin = id.as_str(), "collector woken");
                 rx
@@ -72,21 +81,21 @@ pub async fn ensure_plugin(app: &Arc<AppState>, id: PluginId) -> Result<Value, E
 
 /// `PluginId -> concrete loop task`. The only place that knows every
 /// plugin type; monomorphizes `plugin_loop` per plugin.
-fn spawn_plugin(
-    app: &Arc<AppState>,
-    id: PluginId,
-    ready: watch::Sender<bool>,
-) -> Result<(), EnsureError> {
+fn spawn_plugin(app: &Arc<AppState>, id: PluginId, ready: watch::Sender<bool>) {
     let app = app.clone();
     match id {
-        PluginId::Mem => {
-            let plugin = MemPlugin::new(&app.config);
-            tokio::spawn(plugin_loop(plugin, app, ready));
-            Ok(())
+        PluginId::Cpu => {
+            tokio::spawn(plugin_loop(CpuPlugin::new(&app.config), app, ready));
         }
-        // Implemented in Phase 4 (DEVELOPMENT_PLAN.md). The API layer
-        // filters these out already; this is defense in depth.
-        PluginId::Cpu | PluginId::Load | PluginId::Network => Err(EnsureError::NotRegistered),
+        PluginId::Load => {
+            tokio::spawn(plugin_loop(LoadPlugin::new(&app.config), app, ready));
+        }
+        PluginId::Mem => {
+            tokio::spawn(plugin_loop(MemPlugin::new(&app.config), app, ready));
+        }
+        PluginId::Network => {
+            tokio::spawn(plugin_loop(NetworkPlugin::new(&app.config), app, ready));
+        }
     }
 }
 
@@ -139,8 +148,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unimplemented_plugin_is_not_registered() {
-        let app = AppState::new(fast_config());
+    async fn disabled_plugin_is_not_registered() {
+        let mut config = fast_config();
+        config.plugins.entry("cpu".into()).or_default().enabled = Some(false);
+        let app = AppState::new(config);
         assert_eq!(
             ensure_plugin(&app, PluginId::Cpu).await,
             Err(EnsureError::NotRegistered)

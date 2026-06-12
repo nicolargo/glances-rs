@@ -145,14 +145,14 @@ the process is observably idle (no collection task) after the timeout.
 engine does not change — that's the test of §5.5's claim that warm-up
 knowledge stays inside the plugin.
 
-- [ ] `plugins/load.rs` — instantaneous; degraded Windows behaviour as
+- [x] `plugins/load.rs` — instantaneous; degraded Windows behaviour as
       decided in Phase 1.
-- [ ] `plugins/cpu.rs` — first rate plugin:
+- [x] `plugins/cpu.rs` — first rate plugin:
   - Self-bootstrap warm-up (sample, ~200 ms sleep, sample — §5.5), delay
     respecting the `sysinfo` minimum verified in Phase 1.
   - The three §5.4 safeguards: `saturating_sub`, skip-on-missing-previous,
     measured `Instant` elapsed (never the nominal refresh).
-- [ ] `plugins/network.rs` — first collection plugin (§8.1):
+- [x] `plugins/network.rs` — first collection plugin (§8.1):
   - `HashMap` keyed by interface name (primary key).
   - `show`/`hide` regex filtering **inside `collect()`, before** rate
     computation.

@@ -150,6 +150,18 @@ impl Config {
                     "plugins.{name}.refresh must be a positive number of seconds, got {refresh}"
                 )));
             }
+            // show/hide patterns are compiled here once so plugins can
+            // assume they are valid — a bad regex fails at startup, not
+            // at first wake-up.
+            for (list, patterns) in [("show", &plugin.show), ("hide", &plugin.hide)] {
+                for pattern in patterns {
+                    if let Err(err) = regex_lite::Regex::new(pattern) {
+                        return Err(ConfigError::Invalid(format!(
+                            "plugins.{name}.{list}: invalid regex {pattern:?}: {err}"
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -368,6 +380,14 @@ mod tests {
         ));
         assert!(matches!(
             Config::from_toml("[plugins.cpu]\nrefresh = -1.0"),
+            Err(ConfigError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn invalid_show_hide_regex_is_an_error() {
+        assert!(matches!(
+            Config::from_toml("[plugins.network]\nhide = [\"(unclosed\"]"),
             Err(ConfigError::Invalid(_))
         ));
     }
