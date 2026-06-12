@@ -56,18 +56,18 @@
 throwaway prototype (a `examples/spike.rs` or a temporary bin — deleted at
 the end of the phase, conclusions recorded).
 
-- [ ] **Verify `sysinfo`'s minimum CPU-refresh interval** on Linux
+- [x] **Verify `sysinfo`'s minimum CPU-refresh interval** on Linux
       (`MINIMUM_CPU_UPDATE_INTERVAL`) and confirm the ~200 ms warm-up
       assumption of §5.5. Record the chosen warm-up constant.
-- [ ] Verify network counters are cumulative `u64` on all three platforms
+- [x] Verify network counters are cumulative `u64` on all three platforms
       and observe interface appearance/disappearance behaviour.
-- [ ] Check `load` availability per platform (expected: absent/degraded on
+- [x] Check `load` availability per platform (expected: absent/degraded on
       Windows — §8) and decide the degraded payload shape.
-- [ ] **Freeze the JSON payload shape of each v1 plugin** (`mem`, `cpu`,
+- [x] **Freeze the JSON payload shape of each v1 plugin** (`mem`, `cpu`,
       `load`, `network`) against the Glances v5 REST contract (§1 layer 1).
       Record the four schemas in `docs/api.md`, including the documented
       divergence: `503` instead of `200 null` (§6.2).
-- [ ] Decide the config discovery order (§10). Proposal to validate:
+- [x] Decide the config discovery order (§10). Proposal to validate:
       CLI `--config` flag → `GLANCES_RS_CONFIG` env var →
       `./glances-rs.toml` → `$XDG_CONFIG_HOME/glances-rs/config.toml` →
       `/etc/glances-rs/config.toml`.
