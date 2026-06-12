@@ -108,22 +108,22 @@ probes green.
 **Goal:** the lazy-with-wake-up state machine (§3, §5), proven end-to-end
 with the simplest plugin.
 
-- [ ] `plugins/mod.rs`: `PluginId` enum (`&str` parsing → `404` semantics)
+- [x] `plugins/mod.rs`: `PluginId` enum (`&str` parsing → `404` semantics)
       and the `Plugin` trait exactly as §5.3 (`type State`, `collect(&mut
       State) -> Value`).
-- [ ] `state.rs`: `AppState` with the **three distinct primitives** of §5.1 —
+- [x] `state.rs`: `AppState` with the **three distinct primitives** of §5.1 —
       Tokio `RwLock` store, per-plugin `AtomicI64` last-request,
       `Mutex` collector registry. Do not collapse them.
-- [ ] `collector.rs`:
+- [x] `collector.rs`:
   - `plugin_loop` — owns the inter-cycle state as a local (§5.4, lock-free),
     publishes to the store, checks `last_request` against `idle_timeout`,
     stops via `CancellationToken`. **The store is retained on stop** (§3.2).
   - `ensure_plugin` — `Idle -> Active` transition under the registry mutex;
     the triggering request **waits for the first published cycle**, bounded
     by a guard timeout → `503` (§3.1, §6.2).
-- [ ] `plugins/mem.rs` — instantaneous, `State = ()`, payload per the frozen
+- [x] `plugins/mem.rs` — instantaneous, `State = ()`, payload per the frozen
       schema.
-- [ ] `api/mod.rs`: `GET /api/5/:plugin` (single dynamic route, §6.1) and
+- [x] `api/mod.rs`: `GET /api/5/:plugin` (single dynamic route, §6.1) and
       `GET /api/5/pluginslist`.
 
 **Tests:**

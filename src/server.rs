@@ -1,11 +1,13 @@
 //! axum `Router` construction and startup, including the §7.1 startup check.
 
 use crate::config::Config;
+use crate::state::AppState;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::get;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum StartupError {
@@ -52,9 +54,11 @@ fn probes_router() -> Router {
         .route("/healthz", get(|| async { StatusCode::OK }))
 }
 
-/// Full application router. The `/api/5` sub-router is added in Phase 3.
-pub fn build_router(_config: &Config) -> Router {
-    Router::new().merge(probes_router())
+/// Full application router: inert probes + the `/api/5` sub-router.
+pub fn build_router(app: Arc<AppState>) -> Router {
+    Router::new()
+        .merge(probes_router())
+        .merge(crate::api::api_router(app))
 }
 
 /// Run the §7.1 check, bind, and serve until SIGINT/SIGTERM.
@@ -67,7 +71,8 @@ pub async fn serve(config: Config) -> Result<(), StartupError> {
         .map_err(|err| StartupError::Bind(addr, err))?;
     tracing::info!("listening on http://{addr}");
 
-    axum::serve(listener, build_router(&config))
+    let app = AppState::new(config);
+    axum::serve(listener, build_router(app))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(StartupError::Serve)
