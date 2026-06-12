@@ -15,8 +15,11 @@ target), macOS and Windows.
 ## Build
 
 ```sh
-cargo build --release
+make build        # release binary at target/release/glances-rs
 ```
+
+Other targets: `make test`, `make lint`, `make check` (full local CI pass).
+Without `make`: `cargo build --release`.
 
 ## License
 
