@@ -10,6 +10,16 @@
 # start. Non-loopback exposure must go through a TLS reverse proxy.
 bind = "127.0.0.1"
 port = 61208
+
+# --- Password (recommended: keep it out of this file) ---------------------
+# Name the environment variable that holds the password. glances-rs reads
+# that variable at startup; if it is unset or empty the server refuses to
+# start (it never silently runs without auth). The secret never appears in
+# this file. See the README "Securing the server" section.
+password_env = "GLANCES_RS_PASSWORD"
+#
+# Discouraged alternative — cleartext in the file (dev only). Mutually
+# exclusive with password_env:
 # password = "change-me"
 
 [security]

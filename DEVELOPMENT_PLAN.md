@@ -228,10 +228,18 @@ untouched by construction (§6.4).
       extendable by config (§7.4).
 - [x] Documentation (README): non-loopback exposure **must** sit behind a
       TLS reverse proxy — Basic is base64, not encryption (§7.5).
+- [x] **Password via environment variable** (`[server].password_env` names
+      the variable; the secret never lives in the config file). Resolved at
+      load time; a missing/empty variable, or both `password` and
+      `password_env` set, is a hard startup error. No dotenv dependency: the
+      `.env` file is supplied by systemd `EnvironmentFile`, Docker, or the
+      shell. A didactic "Securing the server" walkthrough was added to the
+      README.
 
 **Tests:** 401 without/with-wrong credentials, 200 with correct ones;
 probes reachable without auth even when a password is set; spoofed `Host`
-rejected; CORS header absent by default, present for an allow-listed origin.
+rejected; CORS header absent by default, present for an allow-listed origin;
+`password_env` resolves / errors on missing-empty-or-both.
 
 **Exit criteria:** the §7.1–7.4 grid fully covered by integration tests.
 

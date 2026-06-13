@@ -24,3 +24,7 @@ target
 # Added by cargo
 
 /target
+
+# Environment files holding secrets (referenced by [server].password_env)
+.env
+*.env

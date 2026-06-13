@@ -29,7 +29,13 @@ pub struct Config {
 pub struct ServerConfig {
     pub bind: IpAddr,
     pub port: u16,
+    /// Cleartext password. Discouraged — prefer `password_env` so the
+    /// secret never lives in the config file. Mutually exclusive with it.
     pub password: Option<String>,
+    /// Name of the environment variable that holds the password. The config
+    /// stores only the variable *name*, never the secret. Resolved at load
+    /// time into `password`; a missing or empty variable is a startup error.
+    pub password_env: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -39,6 +45,38 @@ impl Default for ServerConfig {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: DEFAULT_PORT,
             password: None,
+            password_env: None,
+        }
+    }
+}
+
+impl ServerConfig {
+    /// Replace `password_env` with the secret read from that environment
+    /// variable, leaving downstream code to read `password` uniformly. A
+    /// missing/empty variable — or both fields set — is a hard error, so a
+    /// misconfigured secret never silently degrades to "no auth".
+    fn resolve_password(&mut self) -> Result<(), ConfigError> {
+        match (&self.password, &self.password_env) {
+            (Some(_), Some(_)) => Err(ConfigError::Invalid(
+                "set either [server].password or [server].password_env, not both".into(),
+            )),
+            (_, Some(var)) => {
+                let value = std::env::var(var).map_err(|_| {
+                    ConfigError::Invalid(format!(
+                        "[server].password_env names ${var}, which is not set \
+                         (or not valid UTF-8)"
+                    ))
+                })?;
+                if value.is_empty() {
+                    return Err(ConfigError::Invalid(format!(
+                        "environment variable ${var} (from [server].password_env) is empty"
+                    )));
+                }
+                self.password = Some(value);
+                self.password_env = None;
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -101,10 +139,12 @@ pub struct PluginConfig {
 }
 
 impl Config {
-    /// Parse and validate a TOML document.
+    /// Parse and validate a TOML document, resolving `password_env` against
+    /// the environment so downstream code only ever reads `password`.
     pub fn from_toml(input: &str) -> Result<Self, ConfigError> {
-        let config: Config = toml::from_str(input).map_err(ConfigError::Parse)?;
+        let mut config: Config = toml::from_str(input).map_err(ConfigError::Parse)?;
         config.validate()?;
+        config.server.resolve_password()?;
         Ok(config)
     }
 
@@ -393,6 +433,52 @@ mod tests {
             Config::from_toml("[plugins.network]\nhide = [\"(unclosed\"]"),
             Err(ConfigError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn password_env_resolves_the_secret_from_the_environment() {
+        // Unique var name so parallel tests don't race on the process env.
+        let var = "GLANCES_RS_TEST_PW_OK";
+        unsafe { std::env::set_var(var, "from-env") };
+        let config = Config::from_toml(&format!("[server]\npassword_env = \"{var}\"")).unwrap();
+        assert_eq!(config.server.password.as_deref(), Some("from-env"));
+        // The variable name is consumed; only the resolved secret remains.
+        assert_eq!(config.server.password_env, None);
+        unsafe { std::env::remove_var(var) };
+    }
+
+    #[test]
+    fn password_env_missing_variable_is_an_error() {
+        let var = "GLANCES_RS_TEST_PW_MISSING";
+        unsafe { std::env::remove_var(var) };
+        assert!(matches!(
+            Config::from_toml(&format!("[server]\npassword_env = \"{var}\"")),
+            Err(ConfigError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn password_env_empty_variable_is_an_error() {
+        let var = "GLANCES_RS_TEST_PW_EMPTY";
+        unsafe { std::env::set_var(var, "") };
+        assert!(matches!(
+            Config::from_toml(&format!("[server]\npassword_env = \"{var}\"")),
+            Err(ConfigError::Invalid(_))
+        ));
+        unsafe { std::env::remove_var(var) };
+    }
+
+    #[test]
+    fn password_and_password_env_together_is_an_error() {
+        let var = "GLANCES_RS_TEST_PW_BOTH";
+        unsafe { std::env::set_var(var, "x") };
+        assert!(matches!(
+            Config::from_toml(&format!(
+                "[server]\npassword = \"clear\"\npassword_env = \"{var}\""
+            )),
+            Err(ConfigError::Invalid(_))
+        ));
+        unsafe { std::env::remove_var(var) };
     }
 
     #[test]
