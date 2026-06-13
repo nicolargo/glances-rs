@@ -27,7 +27,13 @@ Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
 |---|---|---|
 | Known plugin, no data yet | `200` with `null` body | **Waits** for the first collection cycle; `503` if it does not arrive within the guard timeout. A `200` always carries real data. |
 | Auth | Basic + Bearer token (`/token`) | Basic only (v1). |
-| Optional fields | Present per platform/psutil | Subset per `sysinfo` capability — see per-plugin notes below. Clients must treat absent optional fields as "not available", exactly as with Glances' platform-specific fields. |
+| `_levels` (alert metadata) | Present on every plugin | **Omitted in v1** — alerting is deferred (ARCHITECTURE.md §6.1, §8.1). This is the one remaining structural difference once full field parity is in place. |
+| Platform-specific fields | Present per platform/psutil | **Full field parity on Linux** (the primary target); macOS/Windows degrade to the portable subset `sysinfo` exposes. Clients treat absent fields as "not available", exactly as with Glances' platform-specific fields. |
+
+> **Field parity (Linux).** `glances-rs` reads `/proc/stat`, `/proc/meminfo`
+> and `/sys/class/net` directly so the Linux payloads match the Glances v5
+> field set field-for-field (minus `_levels`). JSON object key *order* may
+> differ — objects are unordered, so this is not a contract difference.
 
 ## 3. `/all` partial-failure policy
 
@@ -58,16 +64,24 @@ carries three values plus a shared timestamp field:
   "available": 16233152512,
   "percent":   3.7,
   "used":      623091712,
-  "free":      15423582208
+  "free":      15423582208,
+  "active":    31532032,
+  "inactive":  552156160,
+  "buffers":   16388096,
+  "cached":    366714880
 }
 ```
 
 - `percent = (total - available) / total * 100` — the Glances formula.
 - All sizes in bytes (`u64`).
-- Glances optional platform fields (`active`, `inactive`, `buffers`,
-  `cached`, `wired`, `shared`) are **omitted in v1**: `sysinfo` does not
-  expose them. They are optional in Glances too, so clients already
-  tolerate their absence.
+- **Linux** (`/proc/meminfo`, psutil formulas): `cached = Cached +
+  SReclaimable`, `used = total - free - cached - buffers`. The
+  `active`/`inactive`/`buffers`/`cached` fields are present.
+- **macOS/Windows:** degrade to `total`/`available`/`percent`/`used`/`free`
+  (the four extra fields absent), as `sysinfo` does not expose them.
+  Glances marks them platform-specific too, so clients already tolerate
+  their absence. `wired`/`shared` (macOS/BSD only in Glances) are not
+  emitted.
 
 ### 5.2 `load` — object, instantaneous
 
@@ -89,18 +103,34 @@ carries three values plus a shared timestamp field:
 
 ```json
 {
-  "total":             12.5,
-  "cpucore":           4,
+  "total":             2.7,
+  "user":              1.9,
+  "system":            0.7,
+  "idle":              97.3,
+  "nice":              0.0,
+  "iowait":            0.1,
+  "irq":               0.0,
+  "steal":             0.0,
+  "guest":             0.0,
+  "ctx_switches":      1637.7,
+  "interrupts":        1158.6,
+  "soft_interrupts":   742.0,
+  "syscalls":          0.0,
+  "cpucore":           16,
   "time_since_update": 2.004
 }
 ```
 
-- `total` — global CPU usage percent (all cores combined), the headline
-  Glances field.
-- **v1 subset:** Glances' `user`/`system`/`idle`/`iowait`/`steal`/… split
-  and the `ctx_switches`/`interrupts` counters are **not exposed by
-  `sysinfo`** and are omitted in v1. Adding the split later (e.g. by reading
-  `/proc/stat` on Linux) extends the object without breaking it.
+- `total` — busy share, `100 - idle` (iowait counts as busy, matching
+  Glances). The percentages are derived by diffing two `/proc/stat`
+  samples; `guest`/`guest_nice` are subtracted from `user`/`nice` to avoid
+  the kernel's double counting.
+- `ctx_switches`/`interrupts`/`soft_interrupts` are **rates** (per second)
+  from the cumulative `ctxt`/`intr`/`softirq` counters. `syscalls` is `0.0`
+  on Linux, exactly as psutil reports.
+- **Linux:** full field set as above. **macOS/Windows:** degrade to
+  `total`/`cpucore`/`time_since_update` (`sysinfo`'s `global_cpu_usage`),
+  with the §5.5 warm-up against `sysinfo`'s minimum refresh interval.
 
 ### 5.4 `network` — **array** of objects (collection plugin), rate
 
@@ -110,6 +140,7 @@ One element per interface; primary key `interface_name`:
 [
   {
     "interface_name":          "eth0",
+    "alias":                   null,
     "bytes_recv":              1024,
     "bytes_recv_gauge":        1548273,
     "bytes_recv_rate_per_sec": 511.2,
@@ -119,6 +150,8 @@ One element per interface; primary key `interface_name`:
     "bytes_all":               3072,
     "bytes_all_gauge":         6701832,
     "bytes_all_rate_per_sec":  1533.6,
+    "speed":                   0,
+    "is_up":                   true,
     "time_since_update":       2.004
   }
 ]
@@ -130,8 +163,12 @@ One element per interface; primary key `interface_name`:
 - An interface that just appeared is absent for one cycle (no previous
   sample to diff against); an interface that disappeared drops out
   immediately.
-- Glances fields `alias`, `speed`, `is_up` are **omitted in v1** (`sysinfo`
-  does not expose them).
+- `alias` comes from `[plugins.network].alias` (a `name = "alias"` table);
+  `null` when unset. Present on every platform.
+- **Linux:** `is_up` (from the interface `IFF_UP` flag) and `speed` (link
+  speed in bits/s — Mbps × 1048576, `0` when unknown) are added, both from
+  `/sys/class/net`. **macOS/Windows:** `is_up`/`speed` are omitted
+  (`sysinfo` does not expose them).
 
 ---
 

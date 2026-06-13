@@ -95,6 +95,9 @@ pub struct PluginConfig {
     pub show: Vec<String>,
     /// Regex deny-list on the item primary key (collection plugins).
     pub hide: Vec<String>,
+    /// Item primary key -> display alias (collection plugins, e.g. network
+    /// interface names). Empty by default; surfaced verbatim in the payload.
+    pub alias: HashMap<String, String>,
 }
 
 impl Config {

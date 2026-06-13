@@ -1,46 +1,50 @@
 //! `cpu` plugin — rate, scalar. Payload shape: docs/api.md §5.3.
 //!
-//! Two warm-up mechanisms are layered here (ARCHITECTURE.md §4): the
-//! plugin's own self-bootstrap (§5.5) and `sysinfo`'s minimum CPU-refresh
-//! interval. The Phase 1 spike showed that below that minimum (200 ms on
-//! Linux/macOS/Windows) `refresh_cpu_usage()` is *silently skipped* and
-//! the reading keeps a bogus value — hence `RATE_WARMUP` (250 ms) and the
-//! sleep on the cold path. Subsequent cycles are `refresh` apart, which the
-//! config cannot make shorter than valid data requires without the reading
-//! merely going stale (never bogus, since the baseline is then real).
+//! On Linux the full Glances v5 field set is built by diffing two
+//! `/proc/stat` samples (per-category percentages and the
+//! ctx_switches/interrupts/soft_interrupts rates). On other platforms the
+//! payload degrades to `total`/`cpucore`/`time_since_update`, since the
+//! breakdown is not portably available.
+//!
+//! Two warm-up mechanisms are layered (ARCHITECTURE.md §4, §5.5): the
+//! plugin's own self-bootstrap (a baseline sample + `RATE_WARMUP` sleep on
+//! the cold path, so the first response carries real data) and, on the
+//! non-Linux path, `sysinfo`'s minimum CPU-refresh interval — the Phase 1
+//! spike showed a shorter delay silently keeps a bogus reading.
 
-use super::{Plugin, PluginId, RATE_WARMUP, round1, round3};
+use super::load::logical_core_count;
+#[cfg(not(target_os = "linux"))]
+use super::round1;
+use super::{Plugin, PluginId, RATE_WARMUP, round3};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
+#[cfg(not(target_os = "linux"))]
 use sysinfo::System;
 
 pub struct CpuPlugin {
     refresh: Duration,
+    cpucore: usize,
 }
 
 impl CpuPlugin {
     pub fn new(config: &Config) -> Self {
         Self {
             refresh: config.refresh_for(PluginId::Cpu.as_str()),
+            cpucore: logical_core_count(),
         }
     }
 }
 
-/// Inter-cycle memory: the `sysinfo` handle carries the previous sample
-/// internally; `last` is the measured timestamp of that sample.
+/// Inter-cycle memory: the previous cumulative sample and the measured
+/// timestamp it was taken at.
+#[derive(Default)]
 pub struct CpuState {
-    sys: System,
     last: Option<Instant>,
-}
-
-impl Default for CpuState {
-    fn default() -> Self {
-        Self {
-            sys: System::new(),
-            last: None,
-        }
-    }
+    #[cfg(target_os = "linux")]
+    prev: Option<super::linux::CpuSample>,
+    #[cfg(not(target_os = "linux"))]
+    sys: System,
 }
 
 #[async_trait::async_trait]
@@ -55,19 +59,71 @@ impl Plugin for CpuPlugin {
         self.refresh
     }
 
+    #[cfg(target_os = "linux")]
     async fn collect(&self, state: &mut CpuState) -> Value {
-        if state.last.is_none() {
-            // Self-bootstrap (§5.5), cold path only: take the baseline
-            // sample and wait out sysinfo's minimum interval so the first
-            // response carries a real percentage, not a bogus one.
-            state.sys.refresh_cpu_usage();
+        use super::linux;
+
+        if state.prev.is_none() {
+            // Self-bootstrap (§5.5), cold path only: baseline sample, then
+            // wait so the first diff spans a real interval.
+            state.prev = linux::read_proc_stat();
             state.last = Some(Instant::now());
             tokio::time::sleep(RATE_WARMUP).await;
         }
 
+        let now = Instant::now();
+        let elapsed = now.duration_since(state.last.unwrap_or(now)).as_secs_f64();
+        state.last = Some(now);
+
+        let (prev, cur) = match (state.prev, linux::read_proc_stat()) {
+            (Some(prev), Some(cur)) => (prev, cur),
+            // /proc/stat unreadable — degrade rather than fail the cycle.
+            _ => {
+                return json!({
+                    "cpucore": self.cpucore,
+                    "time_since_update": round3(elapsed),
+                });
+            }
+        };
+        state.prev = Some(cur);
+
+        let p = linux::cpu_percents(&prev, &cur);
+        let rate = |delta: u64| {
+            if elapsed > 0.0 {
+                delta as f64 / elapsed
+            } else {
+                0.0
+            }
+        };
+        json!({
+            "total": p.total,
+            "user": p.user,
+            "system": p.system,
+            "idle": p.idle,
+            "nice": p.nice,
+            "iowait": p.iowait,
+            "irq": p.irq,
+            "steal": p.steal,
+            "guest": p.guest,
+            "ctx_switches": rate(cur.ctxt.saturating_sub(prev.ctxt)),
+            "interrupts": rate(cur.intr.saturating_sub(prev.intr)),
+            "soft_interrupts": rate(cur.softirq_total.saturating_sub(prev.softirq_total)),
+            // psutil reports 0 syscalls on Linux; mirror that.
+            "syscalls": 0.0,
+            "cpucore": self.cpucore,
+            "time_since_update": round3(elapsed),
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn collect(&self, state: &mut CpuState) -> Value {
+        if state.last.is_none() {
+            state.sys.refresh_cpu_usage();
+            state.last = Some(Instant::now());
+            tokio::time::sleep(RATE_WARMUP).await;
+        }
         state.sys.refresh_cpu_usage();
         let now = Instant::now();
-        // Measured elapsed time (§5.4) — never the nominal refresh.
         let elapsed = now
             .duration_since(state.last.expect("set above"))
             .as_secs_f64();
@@ -75,7 +131,7 @@ impl Plugin for CpuPlugin {
 
         json!({
             "total": round1(f64::from(state.sys.global_cpu_usage())),
-            "cpucore": state.sys.cpus().len(),
+            "cpucore": self.cpucore,
             "time_since_update": round3(elapsed),
         })
     }
@@ -102,8 +158,37 @@ mod tests {
         let total = obj["total"].as_f64().unwrap();
         assert!((0.0..=100.0).contains(&total), "total = {total}");
         assert!(obj["cpucore"].as_u64().unwrap() > 0);
-        // time_since_update is the measured warm-up interval.
         assert!(obj["time_since_update"].as_f64().unwrap() >= RATE_WARMUP.as_secs_f64());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_payload_has_the_full_breakdown() {
+        let plugin = CpuPlugin::new(&Config::default());
+        let mut state = CpuState::default();
+        let value = plugin.collect(&mut state).await;
+        let obj = value.as_object().unwrap();
+        for field in [
+            "total",
+            "user",
+            "system",
+            "idle",
+            "nice",
+            "iowait",
+            "irq",
+            "steal",
+            "guest",
+            "ctx_switches",
+            "interrupts",
+            "soft_interrupts",
+            "syscalls",
+            "cpucore",
+            "time_since_update",
+        ] {
+            assert!(obj.contains_key(field), "missing field {field}");
+        }
+        let idle = obj["idle"].as_f64().unwrap();
+        assert!((0.0..=100.0).contains(&idle), "idle = {idle}");
     }
 
     #[tokio::test]

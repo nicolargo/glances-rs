@@ -1,9 +1,17 @@
 //! `mem` plugin — instantaneous, scalar. Payload shape: docs/api.md §5.1.
+//!
+//! On Linux the full Glances v5 field set is read from `/proc/meminfo`
+//! (adding `active`/`inactive`/`buffers`/`cached`). On other platforms the
+//! payload degrades to the `total`/`available`/`percent`/`used`/`free`
+//! subset that `sysinfo` exposes portably.
 
-use super::{Plugin, PluginId, round1};
+#[cfg(not(target_os = "linux"))]
+use super::round1;
+use super::{Plugin, PluginId};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
+#[cfg(not(target_os = "linux"))]
 use sysinfo::System;
 
 pub struct MemPlugin {
@@ -18,16 +26,12 @@ impl MemPlugin {
     }
 }
 
-/// Keeps the `sysinfo` handle across cycles instead of re-allocating one
-/// per collection.
+#[derive(Default)]
 pub struct MemState {
+    /// `sysinfo` handle kept across cycles on the degraded path; the Linux
+    /// path reads `/proc/meminfo` directly and needs no state.
+    #[cfg(not(target_os = "linux"))]
     sys: System,
-}
-
-impl Default for MemState {
-    fn default() -> Self {
-        Self { sys: System::new() }
-    }
 }
 
 #[async_trait::async_trait]
@@ -42,6 +46,28 @@ impl Plugin for MemPlugin {
         self.refresh
     }
 
+    #[cfg(target_os = "linux")]
+    async fn collect(&self, _state: &mut MemState) -> Value {
+        let Some(m) = super::linux::read_meminfo() else {
+            // /proc/meminfo unreadable — degrade to the minimal subset.
+            return json!({
+                "total": 0, "available": 0, "percent": 0.0, "used": 0, "free": 0,
+            });
+        };
+        json!({
+            "total": m.total,
+            "available": m.available,
+            "percent": m.percent,
+            "used": m.used,
+            "free": m.free,
+            "active": m.active,
+            "inactive": m.inactive,
+            "buffers": m.buffers,
+            "cached": m.cached,
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
     async fn collect(&self, state: &mut MemState) -> Value {
         state.sys.refresh_memory();
         let total = state.sys.total_memory();
@@ -79,5 +105,27 @@ mod tests {
         assert!(obj["total"].as_u64().unwrap() > 0);
         let percent = obj["percent"].as_f64().unwrap();
         assert!((0.0..=100.0).contains(&percent), "percent = {percent}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_payload_has_the_full_field_set() {
+        let plugin = MemPlugin::new(&Config::default());
+        let mut state = MemState::default();
+        let value = plugin.collect(&mut state).await;
+        let obj = value.as_object().unwrap();
+        for field in [
+            "total",
+            "available",
+            "percent",
+            "used",
+            "free",
+            "active",
+            "inactive",
+            "buffers",
+            "cached",
+        ] {
+            assert!(obj.contains_key(field), "missing field {field}");
+        }
     }
 }

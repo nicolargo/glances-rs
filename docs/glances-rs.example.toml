@@ -35,3 +35,7 @@ guard_timeout = 5.0
 # Regex allow/deny lists on the interface name (not defaults — examples):
 # show = ["^eth", "^en"]
 # hide = ["^lo$"]
+#
+# Per-interface display alias (surfaced verbatim in the `alias` field):
+# [plugins.network.alias]
+# eth0 = "LAN"

@@ -154,6 +154,48 @@ async fn cold_network_carries_rates_for_existing_interfaces() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_cpu_and_network_match_the_full_glances_field_set() {
+    let (router, _) = make_app("");
+
+    let (_, cpu) = get(&router, "/api/5/cpu").await;
+    for field in [
+        "user",
+        "system",
+        "idle",
+        "iowait",
+        "ctx_switches",
+        "interrupts",
+    ] {
+        assert!(!cpu[field].is_null(), "cpu missing {field}: {cpu}");
+    }
+
+    let (_, net) = get(&router, "/api/5/network").await;
+    let item = &net.as_array().unwrap()[0];
+    for field in ["is_up", "speed", "alias"] {
+        assert!(
+            item.get(field).is_some(),
+            "network item missing {field}: {item}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn network_alias_from_config_is_surfaced() {
+    // The container always has a loopback interface; alias it.
+    let (router, _) = make_app("[plugins.network.alias]\nlo = \"loopback\"");
+    let (_, value) = get(&router, "/api/5/network").await;
+    let lo = value
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["interface_name"] == "lo");
+    if let Some(lo) = lo {
+        assert_eq!(lo["alias"], "loopback");
+    }
+}
+
 #[tokio::test]
 async fn network_hide_filter_is_applied() {
     // The container always has a loopback interface; hide it.

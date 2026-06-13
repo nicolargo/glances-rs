@@ -172,6 +172,28 @@ non-empty rate (warm-up promise).
 
 ---
 
+## Phase 4.1 — Full field parity with Glances v5 (Linux)
+
+**Goal:** payload shapes identical to Glances v5, field-for-field. Added
+after a real comparison showed the v1 field subset diverged from the
+Glances contract (ARCHITECTURE.md §1 classes payload shape as "must
+respect"). The earlier subset was scoped to `sysinfo`'s public API; the
+data is actually available from `/proc` and `/sys` on Linux.
+
+- [x] `plugins/linux.rs`: pure parsers for `/proc/stat`, `/proc/meminfo`,
+      `/sys/class/net`, unit-tested against captured samples.
+- [x] `cpu`: full breakdown (per-category percentages + ctx_switches /
+      interrupts / soft_interrupts rates, syscalls = 0) from `/proc/stat`.
+- [x] `mem`: `active`/`inactive`/`buffers`/`cached` from `/proc/meminfo`,
+      psutil formulas (`cached = Cached + SReclaimable`, `used = total -
+      free - cached - buffers`).
+- [x] `network`: `alias` (config), `is_up` + `speed` (`/sys/class/net`).
+- [x] macOS/Windows degrade to the portable `sysinfo` subset.
+- [x] `_levels` (alert metadata) stays deferred with alerting (§6.1, §8.1)
+      — the one remaining structural difference. Documented in docs/api.md.
+
+---
+
 ## Phase 5 — `/api/5/all`
 
 **Goal:** the aggregate route and its concurrency/partial-failure policy.

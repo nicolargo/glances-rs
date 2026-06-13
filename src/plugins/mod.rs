@@ -6,6 +6,9 @@ pub mod load;
 pub mod mem;
 pub mod network;
 
+#[cfg(target_os = "linux")]
+pub mod linux;
+
 use std::time::Duration;
 
 /// Warm-up delay for rate plugins' self-bootstrap (§5.5): `sysinfo`'s
