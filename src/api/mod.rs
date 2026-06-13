@@ -12,14 +12,16 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use std::sync::Arc;
+use tokio::task::JoinSet;
 
 /// The `/api/5` sub-router. The Phase 6 middleware stack (auth, CORS,
 /// trusted host) wraps exactly this router — never the probes.
 pub fn api_router(app: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/5/pluginslist", get(plugins_list))
+        .route("/api/5/all", get(all_stats))
         .route("/api/5/{plugin}", get(plugin_stats))
         .with_state(app)
 }
@@ -34,6 +36,35 @@ async fn plugins_list(State(app): State<Arc<AppState>>) -> Json<Vec<&'static str
         .collect();
     names.sort_unstable();
     Json(names)
+}
+
+/// `GET /api/5/all` — every registered plugin at once, as an object keyed
+/// by plugin name (matching Glances' `store.as_dict()`).
+///
+/// Plugins are woken **concurrently** (§5.2): the latency is the slowest
+/// plugin's warm-up, not the sum. **Partial-failure policy** (§6.3): a
+/// plugin that errs (timeout or not-registered) is simply absent from the
+/// object and the response is still `200` — an aggregate route must not
+/// collapse for one slow component.
+async fn all_stats(State(app): State<Arc<AppState>>) -> Json<Map<String, Value>> {
+    let mut set = JoinSet::new();
+    for id in PluginId::ALL {
+        if !app.is_registered(id) {
+            continue;
+        }
+        let app = app.clone();
+        set.spawn(async move { (id, ensure_plugin(&app, id).await) });
+    }
+
+    let mut out = Map::new();
+    while let Some(joined) = set.join_next().await {
+        // serde_json::Map is a BTreeMap here (no preserve_order feature),
+        // so keys come out sorted regardless of completion order.
+        if let Ok((id, Ok(value))) = joined {
+            out.insert(id.as_str().to_owned(), value);
+        }
+    }
+    Json(out)
 }
 
 /// `GET /api/5/{plugin}` — single dynamic route for every plugin (§6.1).

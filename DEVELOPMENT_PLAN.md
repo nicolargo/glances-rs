@@ -198,9 +198,9 @@ data is actually available from `/proc` and `/sys` on Linux.
 
 **Goal:** the aggregate route and its concurrency/partial-failure policy.
 
-- [ ] `GET /api/5/all`: wake all plugins **concurrently** (`join_all`) so
+- [x] `GET /api/5/all`: wake all plugins **concurrently** (`join_all`) so
       latency is the slowest plugin, not the sum (§5.2).
-- [ ] Partial-failure policy per §6.3: one plugin timing out → `200` with
+- [x] Partial-failure policy per §6.3: one plugin timing out → `200` with
       that plugin absent. **Confirm this choice now** (open question §10);
       if confirmed, document it in `docs/api.md`; if reversed, `503`.
 

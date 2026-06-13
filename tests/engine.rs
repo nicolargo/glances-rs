@@ -11,7 +11,7 @@ use glances_rs::server::build_router;
 use glances_rs::state::AppState;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tower::ServiceExt;
 
 fn fast_config(extra: &str) -> Config {
@@ -116,6 +116,78 @@ async fn all_contract_plugins_answer_cold_with_real_data() {
     let (status, value) = get(&router, "/api/5/network").await;
     assert_eq!(status, StatusCode::OK);
     assert!(value.is_array());
+}
+
+#[tokio::test]
+async fn all_returns_every_registered_plugin() {
+    let (router, _) = make_app("");
+    let (status, value) = get(&router, "/api/5/all").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let obj = value
+        .as_object()
+        .expect("/all is an object keyed by plugin");
+    for name in ["cpu", "load", "mem", "network"] {
+        assert!(obj.contains_key(name), "/all missing {name}: {value}");
+    }
+    assert!(obj["cpu"].is_object());
+    assert!(obj["network"].is_array());
+}
+
+#[tokio::test]
+async fn all_wakes_plugins_concurrently() {
+    // Cold /all wakes cpu and network, each paying a ~250 ms warm-up. Run
+    // serially that would be ~500 ms; concurrently it is ~250 ms (§5.2).
+    let (router, _) = make_app("");
+    let t0 = Instant::now();
+    let (status, _) = get(&router, "/api/5/all").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        t0.elapsed() < Duration::from_millis(450),
+        "{:?} — looks serial, not concurrent",
+        t0.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn all_returns_partial_when_a_plugin_misses_the_guard_timeout() {
+    // guard_timeout (50 ms) < the rate plugins' ~250 ms warm-up: on a cold
+    // /all, cpu and network cannot publish their first cycle in time and
+    // are omitted, while the instantaneous mem and load make it. The
+    // response is 200, not 503 (§6.3): an aggregate must not collapse for a
+    // slow component.
+    let config =
+        Config::from_toml("[collect]\nrefresh = 0.02\nidle_cycles = 2\nguard_timeout = 0.05")
+            .unwrap();
+    let router = build_router(AppState::new(config));
+    let (status, value) = get(&router, "/api/5/all").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let obj = value.as_object().unwrap();
+    assert!(
+        obj.contains_key("mem"),
+        "mem should make the guard: {value}"
+    );
+    assert!(
+        obj.contains_key("load"),
+        "load should make the guard: {value}"
+    );
+    assert!(
+        !obj.contains_key("cpu"),
+        "cpu should miss the guard: {value}"
+    );
+    assert!(
+        !obj.contains_key("network"),
+        "network should miss it: {value}"
+    );
+}
+
+#[tokio::test]
+async fn all_omits_disabled_plugins() {
+    let (router, _) = make_app("[plugins.mem]\nenabled = false");
+    let (status, value) = get(&router, "/api/5/all").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!value.as_object().unwrap().contains_key("mem"));
 }
 
 #[tokio::test]
