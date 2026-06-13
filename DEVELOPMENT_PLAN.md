@@ -217,16 +217,16 @@ response is `200` with the others present.
 **Goal:** the full §7 posture on the `/api/5/` sub-router. Probes remain
 untouched by construction (§6.4).
 
-- [ ] Basic auth middleware on the `/api/5/` sub-router only:
+- [x] Basic auth middleware on the `/api/5/` sub-router only:
   - `base64` decode, comparison via **`constant_time_eq`**.
   - `401` with `WWW-Authenticate: Basic realm="..."`.
   - No-password ⇒ allow, **with the code comment** stating this is safe only
     because the §7.1 startup check proved loopback (§7.2).
-- [ ] CORS: explicit allow-list from config, **empty by default**, never
+- [x] CORS: explicit allow-list from config, **empty by default**, never
       wildcard (§7.3) — `tower-http` `CorsLayer`.
-- [ ] Trusted-`Host` middleware: default `localhost` + `127.0.0.1`,
+- [x] Trusted-`Host` middleware: default `localhost` + `127.0.0.1`,
       extendable by config (§7.4).
-- [ ] Documentation (README): non-loopback exposure **must** sit behind a
+- [x] Documentation (README): non-loopback exposure **must** sit behind a
       TLS reverse proxy — Basic is base64, not encryption (§7.5).
 
 **Tests:** 401 without/with-wrong credentials, 200 with correct ones;

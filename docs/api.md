@@ -21,6 +21,19 @@ Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
 `/api/5/token` (Basic auth only), `/api/5/{plugin}/info`, `/api/5/alert`,
 `/api/5/config`.
 
+**Security (ARCHITECTURE.md §7).** The `/api/5/*` routes sit behind, in order,
+a CORS layer, a trusted-`Host` check and HTTP Basic auth. Added status codes:
+
+- `401` — password configured but credentials missing or wrong; the response
+  carries `WWW-Authenticate: Basic realm="glances-rs"`. When no password is
+  configured the layer allows the request, which is safe only because the
+  §7.1 startup check guarantees a loopback bind in that case.
+- `400` — the `Host` header is present but not in `[security].trusted_hosts`
+  (default `localhost`, `127.0.0.1`). A missing `Host` is allowed.
+
+The probes (`/status`, `/healthz`) are outside this stack — no auth, no host
+check, no wake-up.
+
 ## 2. Divergences from Glances v5 (documented contract differences)
 
 | Behaviour | Glances v5 | glances-rs |

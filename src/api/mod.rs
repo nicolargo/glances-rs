@@ -16,14 +16,16 @@ use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
-/// The `/api/5` sub-router. The Phase 6 middleware stack (auth, CORS,
-/// trusted host) wraps exactly this router — never the probes.
+/// The `/api/5` sub-router, wrapped in the §7 security layers (auth, CORS,
+/// trusted host). The probes are merged separately at the top level, so
+/// they are never covered by these layers (§6.4).
 pub fn api_router(app: Arc<AppState>) -> Router {
-    Router::new()
+    let routes = Router::new()
         .route("/api/5/pluginslist", get(plugins_list))
         .route("/api/5/all", get(all_stats))
         .route("/api/5/{plugin}", get(plugin_stats))
-        .with_state(app)
+        .with_state(app.clone());
+    security::apply_security(routes, app)
 }
 
 /// `GET /api/5/pluginslist` — sorted names of the plugins this server
