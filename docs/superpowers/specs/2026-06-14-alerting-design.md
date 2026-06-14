@@ -129,6 +129,14 @@ walk, short and uncontended (one active loop touches one plugin's entries).
 `observe(&self, id, value: &mut Value)` and `history(&self) -> Vec<Event>`
 are the only public methods.
 
+For collection plugins, `observe` extracts each item's primary-key **value**
+from the `data` items (the value is in the payload; only the key *name*
+metadata was omitted from the envelope). It gets the key field name from a
+per-plugin descriptor — `PluginId::key_field() -> Option<&'static str>`
+(`None` for scalar plugins; `network` → `interface_name`, `fs` → `mnt_point`,
+`diskio` → `disk_name`). That key value builds the `StateKey`, indexes
+`thresholds_by_item`, and drives the §6 stale-key pruning.
+
 ### 4.2 `Event` (parity with `_build_event`)
 
 `{ ts, plugin, key, field, level, previous_level, value, prominent,
@@ -165,26 +173,47 @@ array, `[]` when empty. It never returns `503`.
 
 ### 4.5 Config
 
-Extend `PluginConfig` (in `config.rs`):
+Extend `PluginConfig` (in `config.rs`). Thresholds are declared at **two
+levels**, mirroring Glances' global `{field}_{level}` and specific
+`{key}_{field}_{level}`:
 
 ```toml
+# Scalar plugin — keyed by field name
 [plugins.cpu.thresholds.total]
 careful  = 70.0
 warning  = 80.0
 critical = 90.0
 
-[plugins.mem.thresholds.percent]
+# Collection plugin, GLOBAL — applies to every item, keyed by field name
+[plugins.fs.thresholds.percent]
+careful  = 70.0
 warning  = 80.0
 critical = 90.0      # any subset of the three keys is valid
+
+# Collection plugin, SPECIFIC — keyed by item primary key, then field name
+[plugins.fs.thresholds_by_item."/".percent]
+critical = 95.0      # overrides only `critical` for mount point "/"
 ```
 
 ```rust
 pub struct PluginConfig {
     // …existing fields…
-    pub thresholds: HashMap<String, Thresholds>,  // keyed by field name
+    pub thresholds: HashMap<String, Thresholds>,                          // global, keyed by field
+    pub thresholds_by_item: HashMap<String, HashMap<String, Thresholds>>, // item key -> field -> thresholds
 }
 pub struct Thresholds { careful: Option<f64>, warning: Option<f64>, critical: Option<f64> }
 ```
+
+**Resolution (per-limit merge, faithful to `get_limit`).** For
+`(item, field)`, each limit `careful`/`warning`/`critical` resolves
+independently: the item-specific value
+(`thresholds_by_item[item][field].<limit>`) wins when set, otherwise the
+global (`thresholds[field].<limit>`), otherwise that limit is unset. A
+specific override therefore overrides **only the limit keys it declares** and
+inherits the rest from global — it does *not* replace the whole field block.
+Scalar plugins use `thresholds` only (`thresholds_by_item` is empty/ignored).
+The effective `Thresholds` is computed once per `(item, field)` at observation
+time.
 
 A new global section:
 
@@ -195,18 +224,22 @@ min_duration_seconds = 5.0    # default
 ```
 
 Validation: thresholds, when present, must be finite and ordered
-`careful ≤ warning ≤ critical` for whichever subset is set (reuse the existing
-`validate()` pattern, fail closed with a clear message). `history_size ≥ 1`,
-`min_duration_seconds ≥ 0`.
+`careful ≤ warning ≤ critical` for whichever subset is set. Validate both each
+declared block **and** the merged effective set for every declared
+`(item, field)` pair — both global and `thresholds_by_item` are fully known at
+config load, so a partial override that merges into an out-of-order set fails
+closed at startup with a clear message (reuse the existing `validate()`
+pattern). `history_size ≥ 1`, `min_duration_seconds ≥ 0`.
 
 ## 5. Lazy-model decisions
 
 ### 5.1 Level computation
 
-`level(value)` = highest breached limit among the configured subset
-(`critical` > `warning` > `careful`), else `ok`. Compared directly to the
-field value (glances-rs fields are already the percentages/counters Glances
-compares; no percent-of-max indirection in v0.3.0).
+`level(value)` = highest breached limit among the **effective** subset for
+that `(item, field)` (resolved per §4.5: item-specific over global, per-limit),
+`critical` > `warning` > `careful`, else `ok`. Compared directly to the field
+value (glances-rs fields are already the percentages/counters Glances compares;
+no percent-of-max indirection in v0.3.0).
 
 ### 5.2 Idle-gap rule (deliberate divergence, documented §6.2)
 
@@ -223,8 +256,9 @@ needed), and a direct result of the lazy contract.
 
 ### 5.3 min_duration scope (v0.3.0)
 
-Global `[alerts].min_duration_seconds` only. The per-field / per-level
-override hierarchy of the reference
+Global `[alerts].min_duration_seconds` only. Unlike **thresholds** (which do
+support the global + per-item two-level scheme of §4.5), the per-field /
+per-level / per-item override hierarchy of the reference for *min_duration*
 (`{pk}_{field}_{level}_min_duration_seconds` …) is **deferred** (YAGNI) and
 can be layered on later without changing the journal or the envelope.
 
@@ -254,8 +288,12 @@ needed (unlike `/api/5/config`, which is why that route stays deferred).
   event, `is_initial` only on first commit); idle-gap reset; history bounded
   at `history_size` (ring eviction); §6 stale-key pruning for collection
   items.
-- **Config**: thresholds parse; ordering validation rejects
-  `careful > warning`; `[alerts]` defaults applied when absent.
+- **Config**: thresholds parse (scalar `thresholds` and collection
+  `thresholds_by_item`); **two-level resolution** — a per-item override sets
+  only `critical` and inherits `careful`/`warning` from global (per-limit
+  merge); ordering validation rejects `careful > warning` both in a declared
+  block and in a merged global+item effective set; `[alerts]` defaults applied
+  when absent.
 - **Integration** (`tests/`): with thresholds configured, a breaching value
   populates `_levels` in the plugin payload and, after `min_duration`,
   produces an event at `/api/5/alert`; with no thresholds, `_levels` stays
@@ -273,8 +311,8 @@ default-config axis is a blocker.
 
 ## 10. Out of scope (restated)
 
-Per-field/per-level `min_duration` overrides; per-item threshold overrides for
-collection plugins; built-in default thresholds; `prominent`/visibility config
+Per-field/per-level/per-item `min_duration` overrides; built-in default
+thresholds; `prominent`/visibility config
 (events default `prominent = true`); `/api/5/<plugin>/info`, `sensors`,
 `/api/5/config`, JWT/Bearer, in-binary TLS.
 
