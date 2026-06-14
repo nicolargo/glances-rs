@@ -218,6 +218,32 @@ pub fn read_iface_meta(name: &str) -> IfaceMeta {
     IfaceMeta { is_up, speed }
 }
 
+// ---------------------------------------------------------------------------
+// /etc/os-release — Linux distribution
+// ---------------------------------------------------------------------------
+
+/// `linux_distro` string ("NAME VERSION_ID") from `/etc/os-release`, the same
+/// two fields Glances combines. `None` when the file is unreadable.
+pub fn read_os_release() -> Option<String> {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .map(|s| parse_os_release(&s))
+}
+
+pub fn parse_os_release(content: &str) -> String {
+    let mut name = "";
+    let mut version = "";
+    for line in content.lines() {
+        // Values may be double-quoted (`NAME="Ubuntu"`); trim the quotes.
+        if let Some(v) = line.strip_prefix("NAME=") {
+            name = v.trim().trim_matches('"');
+        } else if let Some(v) = line.strip_prefix("VERSION_ID=") {
+            version = v.trim().trim_matches('"');
+        }
+    }
+    format!("{name} {version}").trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +334,22 @@ Inactive:        150 kB
     fn parse_meminfo_falls_back_to_free_without_memavailable() {
         let m = parse_meminfo("MemTotal: 1000 kB\nMemFree: 400 kB\n");
         assert_eq!(m.available, 400 * 1024);
+    }
+
+    #[test]
+    fn parse_os_release_combines_name_and_version_id() {
+        let content = "\
+PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"
+NAME=\"Ubuntu\"
+VERSION_ID=\"22.04\"
+ID=ubuntu
+";
+        assert_eq!(parse_os_release(content), "Ubuntu 22.04");
+    }
+
+    #[test]
+    fn parse_os_release_tolerates_unquoted_and_missing_fields() {
+        assert_eq!(parse_os_release("NAME=Arch\n"), "Arch");
+        assert_eq!(parse_os_release(""), "");
     }
 }

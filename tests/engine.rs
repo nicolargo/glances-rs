@@ -290,7 +290,10 @@ async fn disabled_plugin_is_404_and_absent_from_pluginslist() {
 
     let (status, value) = get(&router, "/api/5/pluginslist").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(value, serde_json::json!(["cpu", "load", "network"]));
+    assert_eq!(
+        value,
+        serde_json::json!(["cpu", "load", "network", "system", "uptime"])
+    );
 }
 
 #[tokio::test]
@@ -298,7 +301,10 @@ async fn pluginslist_lists_enabled_plugins() {
     let (router, app) = make_app("");
     let (status, value) = get(&router, "/api/5/pluginslist").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(value, serde_json::json!(["cpu", "load", "mem", "network"]));
+    assert_eq!(
+        value,
+        serde_json::json!(["cpu", "load", "mem", "network", "system", "uptime"])
+    );
     // pluginslist is names-only: it must not wake anything.
     assert_eq!(app.active_collectors().await, 0);
 }

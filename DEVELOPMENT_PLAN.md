@@ -306,13 +306,14 @@ re-listed per plugin:
   v5. `_levels` stays out (deferred with alerting — §6.1, §8.1).
 - Wire it into `/api/5/all` (it joins the concurrent wake automatically).
 
-- [ ] **`system`** — instantaneous, `State = ()`. Hostname, OS name/version,
+- [x] **`system`** — instantaneous, `State = ()`. Hostname, OS name/version,
       platform, Linux distro (`/etc/os-release`), human-readable name. The
       simplest of the five; lands first to re-establish the rhythm.
-- [ ] **`uptime`** — instantaneous, `State = ()`. Seconds since boot
-      (`/proc/uptime`, `sysinfo::System::uptime` elsewhere). Decide and freeze
-      the payload shape against Glances (seconds vs. pre-formatted string) in
-      `docs/api.md` before coding.
+- [x] **`uptime`** — instantaneous, `State = ()`. Seconds since boot
+      (`sysinfo::System::uptime`). Payload **frozen as a bare JSON string**
+      (`str(timedelta)` shape) to match the Glances v5 REST contract —
+      `{"seconds": N}` is the Glances *export* shape, not the REST one
+      (docs/api.md §5.6).
 - [ ] **`memswap`** — **part-rate** plugin. `total`/`used`/`free`/`percent` are
       instantaneous, but `sin`/`sout` are cumulative counters
       (`/proc/vmstat` `pswpin`/`pswpout`) → they need the §5.4 rate machinery

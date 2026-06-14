@@ -5,6 +5,8 @@ pub mod cpu;
 pub mod load;
 pub mod mem;
 pub mod network;
+pub mod system;
+pub mod uptime;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -33,15 +35,19 @@ pub enum PluginId {
     Load,
     Mem,
     Network,
+    System,
+    Uptime,
 }
 
 impl PluginId {
-    /// Every plugin in the v1 contract — all implemented since Phase 4.
-    pub const ALL: [PluginId; 4] = [
+    /// Every plugin this build exposes (the v1 four plus the v0.2.0 additions).
+    pub const ALL: [PluginId; 6] = [
         PluginId::Cpu,
         PluginId::Load,
         PluginId::Mem,
         PluginId::Network,
+        PluginId::System,
+        PluginId::Uptime,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -50,6 +56,8 @@ impl PluginId {
             PluginId::Load => "load",
             PluginId::Mem => "mem",
             PluginId::Network => "network",
+            PluginId::System => "system",
+            PluginId::Uptime => "uptime",
         }
     }
 
@@ -60,6 +68,8 @@ impl PluginId {
             "load" => Some(PluginId::Load),
             "mem" => Some(PluginId::Mem),
             "network" => Some(PluginId::Network),
+            "system" => Some(PluginId::System),
+            "uptime" => Some(PluginId::Uptime),
             _ => None,
         }
     }

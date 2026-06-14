@@ -13,7 +13,7 @@
 |--------------------------|--------|-----------------------------------------|--------------|
 | `/api/5/{plugin}`        | GET    | The plugin's payload (object or array)  | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <payload>, … }`  | `200` (possibly partial — see §3) |
-| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","load","mem","network"]` | `200` |
+| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","load","mem","network","system","uptime"]` | `200` |
 | `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
@@ -182,6 +182,44 @@ One element per interface; primary key `interface_name`:
   speed in bits/s — Mbps × 1048576, `0` when unknown) are added, both from
   `/sys/class/net`. **macOS/Windows:** `is_up`/`speed` are omitted
   (`sysinfo` does not expose them).
+
+### 5.5 `system` — object, instantaneous
+
+```json
+{
+  "os_name":      "Linux",
+  "hostname":     "server1",
+  "platform":     "64bit",
+  "os_version":   "6.18.5",
+  "linux_distro": "Ubuntu 22.04",
+  "hr_name":      "Ubuntu 22.04 64bit / Linux 6.18.5"
+}
+```
+
+- `os_name` is the capitalized OS family (`platform.system()` in Glances:
+  `Linux`/`Windows`/`Darwin`/…); `platform` is the pointer width
+  (`64bit`/`32bit`); `os_version` is the kernel release on Linux.
+- **Linux:** `linux_distro` is `NAME VERSION_ID` from `/etc/os-release`, and
+  `hr_name` is composed as `"{linux_distro} {platform} / {os_name}
+  {os_version}"` — the Glances format.
+- **macOS/Windows:** `linux_distro` is omitted; `hr_name` degrades to
+  `"{os_name} {os_version} {platform}"`, as Glances does off Linux.
+
+### 5.6 `uptime` — **string**, instantaneous
+
+Unlike every other plugin, the payload is a **bare JSON string**, mirroring
+what Glances v5 serializes at the REST layer (its uptime stat is a
+`str(timedelta)`):
+
+```json
+"5 days, 1:02:42"
+```
+
+- Format: `"H:MM:SS"`, or `"N day[s], H:MM:SS"` past 24 h (hours not
+  zero-padded; minutes and seconds are) — Python's `str(timedelta)` shape.
+- `{"seconds": <int>}` is the Glances *export* shape (InfluxDB &c.), **not**
+  the REST shape; clients of the REST API receive the string above.
+- Same on every platform (seconds since boot from `sysinfo`).
 
 ---
 

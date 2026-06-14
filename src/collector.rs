@@ -17,6 +17,8 @@ use crate::plugins::cpu::CpuPlugin;
 use crate::plugins::load::LoadPlugin;
 use crate::plugins::mem::MemPlugin;
 use crate::plugins::network::NetworkPlugin;
+use crate::plugins::system::SystemPlugin;
+use crate::plugins::uptime::UptimePlugin;
 use crate::plugins::{Plugin, PluginId};
 use crate::state::{AppState, Collector};
 use serde_json::Value;
@@ -95,6 +97,12 @@ fn spawn_plugin(app: &Arc<AppState>, id: PluginId, ready: watch::Sender<bool>) {
         }
         PluginId::Network => {
             tokio::spawn(plugin_loop(NetworkPlugin::new(&app.config), app, ready));
+        }
+        PluginId::System => {
+            tokio::spawn(plugin_loop(SystemPlugin::new(&app.config), app, ready));
+        }
+        PluginId::Uptime => {
+            tokio::spawn(plugin_loop(UptimePlugin::new(&app.config), app, ready));
         }
     }
 }
