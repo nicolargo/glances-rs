@@ -16,6 +16,7 @@
 use crate::plugins::cpu::CpuPlugin;
 use crate::plugins::load::LoadPlugin;
 use crate::plugins::mem::MemPlugin;
+use crate::plugins::memswap::MemSwapPlugin;
 use crate::plugins::network::NetworkPlugin;
 use crate::plugins::system::SystemPlugin;
 use crate::plugins::uptime::UptimePlugin;
@@ -94,6 +95,9 @@ fn spawn_plugin(app: &Arc<AppState>, id: PluginId, ready: watch::Sender<bool>) {
         }
         PluginId::Mem => {
             tokio::spawn(plugin_loop(MemPlugin::new(&app.config), app, ready));
+        }
+        PluginId::MemSwap => {
+            tokio::spawn(plugin_loop(MemSwapPlugin::new(&app.config), app, ready));
         }
         PluginId::Network => {
             tokio::spawn(plugin_loop(NetworkPlugin::new(&app.config), app, ready));

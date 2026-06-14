@@ -22,6 +22,12 @@ tower-http = { version = "0.6.11", features = ["cors"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
+# Linux-only: sysconf(_SC_PAGESIZE) for the memswap sin/sout page→byte
+# conversion (page size is not 4 KiB on every arch, e.g. aarch64). libc is
+# already in the tree (sysinfo depends on it), so this adds no binary weight.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.186"
+
 # Footprint-first release profile (ARCHITECTURE.md §9). `panic = "abort"` is a
 # deliberate choice revisited in Phase 7 of DEVELOPMENT_PLAN.md.
 [profile.release]

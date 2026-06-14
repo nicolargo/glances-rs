@@ -13,7 +13,7 @@
 |--------------------------|--------|-----------------------------------------|--------------|
 | `/api/5/{plugin}`        | GET    | The plugin's payload (object or array)  | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <payload>, … }`  | `200` (possibly partial — see §3) |
-| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","load","mem","network","system","uptime"]` | `200` |
+| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
@@ -220,6 +220,33 @@ what Glances v5 serializes at the REST layer (its uptime stat is a
 - `{"seconds": <int>}` is the Glances *export* shape (InfluxDB &c.), **not**
   the REST shape; clients of the REST API receive the string above.
 - Same on every platform (seconds since boot from `sysinfo`).
+
+### 5.7 `memswap` — object, part-rate
+
+```json
+{
+  "total":             4294963200,
+  "used":              1073737728,
+  "free":              3221225472,
+  "percent":           25.0,
+  "sin":               884736,
+  "sout":              2371584,
+  "time_since_update": 2.004
+}
+```
+
+- `total`/`used`/`free` in bytes; `percent = used / total * 100`
+  (`used = total - free`), `0.0` when there is no swap.
+- `sin`/`sout` are **cumulative** byte counters (pages swapped in/out since
+  boot × page size), emitted **raw** — Glances does not decorate them as a
+  per-second rate. A client computes the rate from two samples and
+  `time_since_update` (measured `Instant` elapsed; `0.0` on the first cycle,
+  as Glances reports it). This is why the §4 `_gauge`/`_rate_per_sec`
+  triple is **not** used here: it would diverge from the Glances payload.
+- **Linux** (`/proc/meminfo` + `/proc/vmstat`): full field set; `sin`/`sout`
+  use the kernel page size (`sysconf(_SC_PAGESIZE)`). **macOS/Windows:**
+  degrade to `total`/`used`/`free`/`percent`/`time_since_update`; `sin`/`sout`
+  are omitted (`sysinfo` does not expose the swap counters).
 
 ---
 

@@ -36,7 +36,8 @@ idle_cycles = 5
 # How long a waking request waits for the first cycle before answering 503.
 guard_timeout = 5.0
 
-# Per-plugin sections (cpu, load, mem, network, system, uptime) — all optional.
+# Per-plugin sections (cpu, load, mem, memswap, network, system, uptime) —
+# all optional.
 # [plugins.cpu]
 # refresh = 1.0
 #

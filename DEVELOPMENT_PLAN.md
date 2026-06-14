@@ -314,13 +314,17 @@ re-listed per plugin:
       (`str(timedelta)` shape) to match the Glances v5 REST contract —
       `{"seconds": N}` is the Glances *export* shape, not the REST one
       (docs/api.md §5.6).
-- [ ] **`memswap`** — **part-rate** plugin. `total`/`used`/`free`/`percent` are
-      instantaneous, but `sin`/`sout` are cumulative counters
-      (`/proc/vmstat` `pswpin`/`pswpout`) → they need the §5.4 rate machinery
-      (`saturating_sub`, measured `Instant` elapsed) and the §5.5 warm-up.
-      `State` carries only the previous `sin`/`sout` + `Instant`. First plugin
-      that mixes instantaneous and rate fields — mind that the warm-up sleep is
-      on the cold path only.
+- [x] **`memswap`** — **part-rate** plugin. `total`/`used`/`free`/`percent` are
+      instantaneous; `sin`/`sout` are cumulative byte counters (`/proc/vmstat`
+      `pswpin`/`pswpout` × `sysconf(_SC_PAGESIZE)`). **Design call vs. the plan:
+      no §5.5 warm-up.** Glances emits `sin`/`sout` *raw* (it does not decorate
+      them as a server-side per-second rate), so there is nothing to bootstrap
+      and warming up would only add cold-start latency — `State` keeps just the
+      previous `Instant` for `time_since_update` (`0.0` on the first cycle, as
+      Glances reports). The client derives the rate from two samples. Added a
+      Linux-only `libc` dep (already transitive) for the page size; degrades to
+      the `sysinfo` swap subset without `sin`/`sout` off Linux (docs/api.md
+      §5.7).
 - [ ] **`fs`** — **collection**, instantaneous (disk *space*, no rate). One
       item per mount point, keyed by `mnt_point`. Reuse the `network`
       `show`/`hide` regex filtering **inside `collect()`** (§8.1) on the mount

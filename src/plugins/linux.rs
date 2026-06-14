@@ -219,6 +219,81 @@ pub fn read_iface_meta(name: &str) -> IfaceMeta {
 }
 
 // ---------------------------------------------------------------------------
+// /proc/meminfo + /proc/vmstat — swap
+// ---------------------------------------------------------------------------
+
+/// Swap figures in bytes, mirroring `psutil.swap_memory()` on Linux. `sin`
+/// and `sout` are **cumulative** byte counters (pages swapped in/out since
+/// boot × page size), reported raw exactly as Glances does — the client
+/// derives a rate from successive samples and `time_since_update`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SwapInfo {
+    pub total: u64,
+    pub used: u64,
+    pub free: u64,
+    pub percent: f64,
+    pub sin: u64,
+    pub sout: u64,
+}
+
+pub fn read_swap() -> Option<SwapInfo> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let vmstat = std::fs::read_to_string("/proc/vmstat").ok()?;
+    Some(parse_swap(&meminfo, &vmstat, page_size()))
+}
+
+/// `sysconf(_SC_PAGESIZE)`, falling back to 4 KiB if it ever returns ≤ 0.
+fn page_size() -> u64 {
+    // SAFETY: sysconf with a constant name has no preconditions and no
+    // memory effects; it returns a `long`.
+    let v = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if v > 0 { v as u64 } else { 4096 }
+}
+
+/// `page_size` is passed in (not read here) so the parser stays pure and
+/// testable without touching `sysconf`.
+pub fn parse_swap(meminfo: &str, vmstat: &str, page_size: u64) -> SwapInfo {
+    let (mut total, mut free) = (0u64, 0u64);
+    for line in meminfo.lines() {
+        if let Some((key, rest)) = line.split_once(':')
+            && let Some(num) = rest.split_whitespace().next()
+            && let Ok(value) = num.parse::<u64>()
+        {
+            match key {
+                "SwapTotal" => total = value * 1024, // kB -> bytes
+                "SwapFree" => free = value * 1024,
+                _ => {}
+            }
+        }
+    }
+
+    let (mut pswpin, mut pswpout) = (0u64, 0u64);
+    for line in vmstat.lines() {
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("pswpin") => pswpin = it.next().and_then(|x| x.parse().ok()).unwrap_or(0),
+            Some("pswpout") => pswpout = it.next().and_then(|x| x.parse().ok()).unwrap_or(0),
+            _ => {}
+        }
+    }
+
+    let used = total.saturating_sub(free);
+    let percent = if total == 0 {
+        0.0
+    } else {
+        round1(used as f64 / total as f64 * 100.0)
+    };
+    SwapInfo {
+        total,
+        used,
+        free,
+        percent,
+        sin: pswpin.saturating_mul(page_size),
+        sout: pswpout.saturating_mul(page_size),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // /etc/os-release — Linux distribution
 // ---------------------------------------------------------------------------
 
@@ -334,6 +409,35 @@ Inactive:        150 kB
     fn parse_meminfo_falls_back_to_free_without_memavailable() {
         let m = parse_meminfo("MemTotal: 1000 kB\nMemFree: 400 kB\n");
         assert_eq!(m.available, 400 * 1024);
+    }
+
+    #[test]
+    fn parse_swap_reads_bytes_and_cumulative_counters() {
+        let meminfo = "\
+MemTotal:       1000 kB
+SwapTotal:      2000 kB
+SwapFree:        500 kB
+";
+        let vmstat = "\
+nr_free_pages 12345
+pswpin 10
+pswpout 7
+";
+        // page_size = 4096: sin = 10*4096, sout = 7*4096.
+        let s = parse_swap(meminfo, vmstat, 4096);
+        assert_eq!(s.total, 2000 * 1024);
+        assert_eq!(s.free, 500 * 1024);
+        assert_eq!(s.used, (2000 - 500) * 1024);
+        assert_eq!(s.percent, 75.0); // 1500/2000
+        assert_eq!(s.sin, 10 * 4096);
+        assert_eq!(s.sout, 7 * 4096);
+    }
+
+    #[test]
+    fn parse_swap_without_swap_is_all_zero() {
+        let s = parse_swap("MemTotal: 1000 kB\n", "pswpin 0\n", 4096);
+        assert_eq!(s.total, 0);
+        assert_eq!(s.percent, 0.0);
     }
 
     #[test]

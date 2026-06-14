@@ -4,6 +4,7 @@
 pub mod cpu;
 pub mod load;
 pub mod mem;
+pub mod memswap;
 pub mod network;
 pub mod system;
 pub mod uptime;
@@ -34,6 +35,7 @@ pub enum PluginId {
     Cpu,
     Load,
     Mem,
+    MemSwap,
     Network,
     System,
     Uptime,
@@ -41,10 +43,11 @@ pub enum PluginId {
 
 impl PluginId {
     /// Every plugin this build exposes (the v1 four plus the v0.2.0 additions).
-    pub const ALL: [PluginId; 6] = [
+    pub const ALL: [PluginId; 7] = [
         PluginId::Cpu,
         PluginId::Load,
         PluginId::Mem,
+        PluginId::MemSwap,
         PluginId::Network,
         PluginId::System,
         PluginId::Uptime,
@@ -55,6 +58,7 @@ impl PluginId {
             PluginId::Cpu => "cpu",
             PluginId::Load => "load",
             PluginId::Mem => "mem",
+            PluginId::MemSwap => "memswap",
             PluginId::Network => "network",
             PluginId::System => "system",
             PluginId::Uptime => "uptime",
@@ -67,6 +71,7 @@ impl PluginId {
             "cpu" => Some(PluginId::Cpu),
             "load" => Some(PluginId::Load),
             "mem" => Some(PluginId::Mem),
+            "memswap" => Some(PluginId::MemSwap),
             "network" => Some(PluginId::Network),
             "system" => Some(PluginId::System),
             "uptime" => Some(PluginId::Uptime),
