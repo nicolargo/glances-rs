@@ -14,9 +14,14 @@
 //! request spawns a fresh collector.
 
 use crate::plugins::cpu::CpuPlugin;
+use crate::plugins::diskio::DiskioPlugin;
+use crate::plugins::fs::FsPlugin;
 use crate::plugins::load::LoadPlugin;
 use crate::plugins::mem::MemPlugin;
+use crate::plugins::memswap::MemSwapPlugin;
 use crate::plugins::network::NetworkPlugin;
+use crate::plugins::system::SystemPlugin;
+use crate::plugins::uptime::UptimePlugin;
 use crate::plugins::{Plugin, PluginId};
 use crate::state::{AppState, Collector};
 use serde_json::Value;
@@ -87,14 +92,29 @@ fn spawn_plugin(app: &Arc<AppState>, id: PluginId, ready: watch::Sender<bool>) {
         PluginId::Cpu => {
             tokio::spawn(plugin_loop(CpuPlugin::new(&app.config), app, ready));
         }
+        PluginId::Diskio => {
+            tokio::spawn(plugin_loop(DiskioPlugin::new(&app.config), app, ready));
+        }
+        PluginId::Fs => {
+            tokio::spawn(plugin_loop(FsPlugin::new(&app.config), app, ready));
+        }
         PluginId::Load => {
             tokio::spawn(plugin_loop(LoadPlugin::new(&app.config), app, ready));
         }
         PluginId::Mem => {
             tokio::spawn(plugin_loop(MemPlugin::new(&app.config), app, ready));
         }
+        PluginId::MemSwap => {
+            tokio::spawn(plugin_loop(MemSwapPlugin::new(&app.config), app, ready));
+        }
         PluginId::Network => {
             tokio::spawn(plugin_loop(NetworkPlugin::new(&app.config), app, ready));
+        }
+        PluginId::System => {
+            tokio::spawn(plugin_loop(SystemPlugin::new(&app.config), app, ready));
+        }
+        PluginId::Uptime => {
+            tokio::spawn(plugin_loop(UptimePlugin::new(&app.config), app, ready));
         }
     }
 }

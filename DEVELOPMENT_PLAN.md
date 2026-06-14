@@ -278,14 +278,157 @@ release workflow fires on the tag push.)
 
 ---
 
-## Out of scope (deferred, per ARCHITECTURE.md)
+# v0.2.0 — Plugin coverage & footprint pass
 
-Tracked for later iterations, deliberately **not** in this plan:
-`fs` plugin and the next collection iteration (§8); `/api/5/<plugin>/info`,
-`/api/5/alert`, `/api/5/config` (§6.1); JWT/Bearer auth (§7.2); in-binary
-TLS (§7.5); shared sampler for sibling plugins (§5.2) — only if Phase 7
-profiling shows redundant `sysinfo` refreshes actually matter; alerting and
-per-item `_levels` cleanup (§8.1).
+> Everything above shipped as **v0.1.0** (engine, the four core plugins,
+> security, measured footprint). v0.2.0 has one theme: **widen the plugin
+> coverage** with five new plugins, then **revisit the footprint** now that
+> there is more collection code to pay for. Alerting (`_levels` +
+> `/api/5/alert`), `/api/5/<plugin>/info` and `sensors` are deliberately held
+> for v0.3.0 so each release stays small and its footprint stays measurable.
+>
+> No new architecture: every plugin below is a fresh `Plugin` implementation
+> over the existing lazy-wake-up engine (§3, §5) — the engine is *not* touched.
+> Plugins are ordered by increasing difficulty (instantaneous → rate →
+> collection → collection+rate), the same ramp Phase 3→4 used.
+
+## Phase 8 — New plugins
+
+Each plugin repeats the same checklist, so it is stated once here and not
+re-listed per plugin:
+
+- Add the variant to `PluginId` (`as_str`/`parse`/`ALL`) — `parse` keeps the
+  `404` semantics (§6.1).
+- **Linux first-class, then degrade.** Pure parsers in `plugins/linux.rs`,
+  unit-tested against captured `/proc`·`/sys` samples (the Phase 4.1 pattern);
+  macOS/Windows fall back to the portable `sysinfo` subset.
+- **Freeze the payload** in `docs/api.md` §5, field-for-field against Glances
+  v5. `_levels` stays out (deferred with alerting — §6.1, §8.1).
+- Wire it into `/api/5/all` (it joins the concurrent wake automatically).
+
+- [x] **`system`** — instantaneous, `State = ()`. Hostname, OS name/version,
+      platform, Linux distro (`/etc/os-release`), human-readable name. The
+      simplest of the five; lands first to re-establish the rhythm.
+- [x] **`uptime`** — instantaneous, `State = ()`. Seconds since boot
+      (`sysinfo::System::uptime`). Payload **frozen as a bare JSON string**
+      (`str(timedelta)` shape) to match the Glances v5 REST contract —
+      `{"seconds": N}` is the Glances *export* shape, not the REST one
+      (docs/api.md §5.6).
+- [x] **`memswap`** — **part-rate** plugin. `total`/`used`/`free`/`percent` are
+      instantaneous; `sin`/`sout` are cumulative byte counters (`/proc/vmstat`
+      `pswpin`/`pswpout` × `sysconf(_SC_PAGESIZE)`). **Design call vs. the plan:
+      no §5.5 warm-up.** Glances emits `sin`/`sout` *raw* (it does not decorate
+      them as a server-side per-second rate), so there is nothing to bootstrap
+      and warming up would only add cold-start latency — `State` keeps just the
+      previous `Instant` for `time_since_update` (`0.0` on the first cycle, as
+      Glances reports). The client derives the rate from two samples. Added a
+      Linux-only `libc` dep (already transitive) for the page size; degrades to
+      the `sysinfo` swap subset without `sin`/`sout` off Linux (docs/api.md
+      §5.7).
+- [x] **`fs`** — **collection**, instantaneous (disk *space*, no rate). One
+      item per mount point, keyed by `mnt_point`, from `sysinfo::Disks`
+      (cross-platform, like `network`). Extracted the `show`/`hide` regex into
+      a shared `plugins::filter::KeyFilter` (now used by `network` and `fs`,
+      and `diskio` next). No inter-cycle state ⇒ no leak risk. `percent =
+      used/size` (a slight approximation of psutil's root-reserve-aware
+      percent); `key` and `options` omitted vs. Glances (docs/api.md §5.8).
+- [x] **`diskio`** — **collection + rate**, the hardest, landed last. One item
+      per disk (`/proc/diskstats`), cumulative `read`/`write` bytes & counts →
+      rates, reusing `network`'s `step` shape and `KeyFilter`. Combines all the
+      traps: §5.4 (`saturating_sub`, skip a disk absent from the previous
+      sample via `?`, measured `Instant`), §5.5 (warm-up), and the §8.1
+      anti-leak rule (`state.previous` = current sample only, with the comment).
+      **Linux-only** — `sysinfo` has no per-disk I/O, so other platforms return
+      an empty array; `read_time`/`write_time`/latency omitted (docs/api.md
+      §5.9).
+
+**Tests:** per plugin — Linux parsers against captured samples; rate plugins
+(`memswap`, `diskio`) fed two synthetic samples (nominal rate, counter
+rollback → 0, appearing item skipped, disappearing item absent **and absent
+from `previous`**); `fs`/`diskio` `show`/`hide` filtering; cold
+`curl /api/5/<plugin>` returns real non-empty data (the warm-up promise for
+the rate ones). Integration: cold `/all` now returns all nine plugins.
+
+**Exit criteria:** nine plugins live (`cpu`, `load`, `mem`, `network`,
+`system`, `uptime`, `memswap`, `fs`, `diskio`); values plausible against
+`free`/`df`/`iostat` on Linux; `docs/api.md` §5 covers all nine.
+
+### Phase 8.1 — Align the output to the Glances v5 REST API
+
+A review against a live Glances v5 (`develop-v5`) server showed the payloads
+followed the **v4** conventions, not v5. Corrected across every plugin
+(`docs/api.md` §4 rewritten):
+
+- [x] **Response envelope** — shared `plugins::envelope()`: object plugins gain
+      top-level `time_since_update` + `_levels` (`{}` until alerting); collection
+      plugins nest their array under `data`. `plugins::Clock` gives instantaneous
+      plugins a `time_since_update`.
+- [x] **Plain per-second rates** — dropped the v4 `X`/`X_gauge`/`X_rate_per_sec`
+      triple; a rate field is now a single per-second value (network `bytes_*`,
+      diskio `read_*`/`write_*`, cpu `ctx_switches`/…). **memswap `sin`/`sout`
+      are now rates** (warm-up added), not cumulative.
+- [x] **uptime** = `{"seconds": <int>}` (the v5 shape; was the v4 timedelta
+      string).
+- [x] **Default `hide` lists** (`filter::hide_or_default`, replaced by an
+      explicit `hide`): network `docker.*,lo`; fs `/boot.*,.*/snap.*`; diskio
+      `loop.*,/dev/loop.*`.
+- [x] **Conditional `alias`** on collection items — present only when configured
+      for that item (was always `null`).
+
+---
+
+## Phase 9 — Footprint optimization study
+
+**Goal:** the footprint is the project's *raison d'être*; five new plugins add
+collection code, allocations and `sysinfo`/`/proc` reads, so re-measure and
+hunt for regressions. This phase is a **study + measurement + recommendation**
+(a spike), not a blanket rewrite — each idea is adopted only if the numbers
+justify it, and only if it does not compromise correctness or the §3 lazy
+contract.
+
+- [ ] **Re-baseline** with `scripts/footprint.sh`: RSS/CPU at rest and under
+      2/10/100 req/s on `/all`, now with nine plugins. Compare against the
+      v0.1.0 numbers in the README; flag any regression beyond noise.
+- [ ] **Shared sampler (§5.2)** — now that several plugins read the same
+      source (`/proc/stat` for `cpu`+`system`, `/proc/meminfo`·`vmstat` for
+      `mem`+`memswap`), measure whether redundant reads/refreshes actually
+      cost anything under concurrent `/all`. Implement the §3.7 shared sampler
+      **only if** profiling shows it matters — it must not touch the wake-up
+      architecture.
+- [ ] **Per-cycle allocation** — profile the hot path (the loop publishing a
+      fresh `serde_json::Value` every cycle, the `/proc` read buffers).
+      Evaluate reusing read buffers across cycles and/or serializing a typed
+      public struct directly instead of building a `Value`. Adopt only with a
+      measured win.
+- [ ] **Binary size / build profile** — revisit `opt-level = 3` vs `"z"/"s"`,
+      and whether a lighter allocator helps RSS, against the single-binary and
+      footprint goals (§9). Measure both axes (size *and* runtime RSS); keep
+      whatever the numbers favour.
+- [ ] **Dependency audit** — review the tree for weight that can be dropped or
+      feature-gated without losing functionality.
+
+**Tests:** no behavioural change expected — the full suite stays green. Any
+adopted optimization keeps the §5.4 safeguards and the §8.1 anti-leak rule
+intact; the footprint script is the acceptance gate.
+
+**Exit criteria:** README footprint table refreshed for v0.2.0; each
+optimization either adopted with a recorded measured gain or explicitly
+rejected with the reason (the Phase 7 `panic = "abort"` precedent — decisions
+are recorded, not silently dropped).
+
+**Exit criteria (release):** v0.2.0 tag, binaries attached, `docs/api.md` and
+README reflect the nine plugins and the refreshed footprint.
+
+---
+
+## Out of scope (deferred to v0.3.0+)
+
+Tracked for later iterations, deliberately **not** in v0.2.0:
+**alerting** — per-field `_levels` + `/api/5/alert`, with the per-item
+`_levels` cleanup of §8.1 (this is the v0.3.0 headline, closing the last
+payload-parity gap); `/api/5/<plugin>/info` and the `sensors` plugin (§6.1,
+§8); `/api/5/config` (§6.1, needs the public-view filter of §7.6); JWT/Bearer
+auth (§7.2); in-binary TLS (§7.5).
 
 ## Open questions → where they get answered
 

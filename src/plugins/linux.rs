@@ -218,6 +218,144 @@ pub fn read_iface_meta(name: &str) -> IfaceMeta {
     IfaceMeta { is_up, speed }
 }
 
+// ---------------------------------------------------------------------------
+// /proc/meminfo + /proc/vmstat — swap
+// ---------------------------------------------------------------------------
+
+/// Swap figures in bytes, mirroring `psutil.swap_memory()` on Linux. `sin`
+/// and `sout` are **cumulative** byte counters (pages swapped in/out since
+/// boot × page size), reported raw exactly as Glances does — the client
+/// derives a rate from successive samples and `time_since_update`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SwapInfo {
+    pub total: u64,
+    pub used: u64,
+    pub free: u64,
+    pub percent: f64,
+    pub sin: u64,
+    pub sout: u64,
+}
+
+pub fn read_swap() -> Option<SwapInfo> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let vmstat = std::fs::read_to_string("/proc/vmstat").ok()?;
+    Some(parse_swap(&meminfo, &vmstat, page_size()))
+}
+
+/// `sysconf(_SC_PAGESIZE)`, falling back to 4 KiB if it ever returns ≤ 0.
+fn page_size() -> u64 {
+    // SAFETY: sysconf with a constant name has no preconditions and no
+    // memory effects; it returns a `long`.
+    let v = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if v > 0 { v as u64 } else { 4096 }
+}
+
+/// `page_size` is passed in (not read here) so the parser stays pure and
+/// testable without touching `sysconf`.
+pub fn parse_swap(meminfo: &str, vmstat: &str, page_size: u64) -> SwapInfo {
+    let (mut total, mut free) = (0u64, 0u64);
+    for line in meminfo.lines() {
+        if let Some((key, rest)) = line.split_once(':')
+            && let Some(num) = rest.split_whitespace().next()
+            && let Ok(value) = num.parse::<u64>()
+        {
+            match key {
+                "SwapTotal" => total = value * 1024, // kB -> bytes
+                "SwapFree" => free = value * 1024,
+                _ => {}
+            }
+        }
+    }
+
+    let (mut pswpin, mut pswpout) = (0u64, 0u64);
+    for line in vmstat.lines() {
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("pswpin") => pswpin = it.next().and_then(|x| x.parse().ok()).unwrap_or(0),
+            Some("pswpout") => pswpout = it.next().and_then(|x| x.parse().ok()).unwrap_or(0),
+            _ => {}
+        }
+    }
+
+    let used = total.saturating_sub(free);
+    let percent = if total == 0 {
+        0.0
+    } else {
+        round1(used as f64 / total as f64 * 100.0)
+    };
+    SwapInfo {
+        total,
+        used,
+        free,
+        percent,
+        sin: pswpin.saturating_mul(page_size),
+        sout: pswpout.saturating_mul(page_size),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// /proc/diskstats — per-disk I/O counters
+// ---------------------------------------------------------------------------
+
+/// Cumulative `(read_count, write_count, read_bytes, write_bytes)` for one
+/// disk. `*_bytes` are sectors × 512 (the fixed `/proc/diskstats` sector
+/// size, as psutil uses), independent of the device's physical sector size.
+pub type DiskIoCounters = (u64, u64, u64, u64);
+
+pub fn read_diskstats() -> Option<std::collections::HashMap<String, DiskIoCounters>> {
+    std::fs::read_to_string("/proc/diskstats")
+        .ok()
+        .map(|s| parse_diskstats(&s))
+}
+
+pub fn parse_diskstats(content: &str) -> HashMap<String, DiskIoCounters> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        // major minor name reads merged sectors_read ms_read writes merged
+        // sectors_written ms_write ... (≥ 14 base fields).
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 14 {
+            continue;
+        }
+        let num = |i: usize| f[i].parse::<u64>().unwrap_or(0);
+        let read_count = num(3);
+        let read_bytes = num(5).saturating_mul(512);
+        let write_count = num(7);
+        let write_bytes = num(9).saturating_mul(512);
+        map.insert(
+            f[2].to_string(),
+            (read_count, write_count, read_bytes, write_bytes),
+        );
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
+// /etc/os-release — Linux distribution
+// ---------------------------------------------------------------------------
+
+/// `linux_distro` string ("NAME VERSION_ID") from `/etc/os-release`, the same
+/// two fields Glances combines. `None` when the file is unreadable.
+pub fn read_os_release() -> Option<String> {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .map(|s| parse_os_release(&s))
+}
+
+pub fn parse_os_release(content: &str) -> String {
+    let mut name = "";
+    let mut version = "";
+    for line in content.lines() {
+        // Values may be double-quoted (`NAME="Ubuntu"`); trim the quotes.
+        if let Some(v) = line.strip_prefix("NAME=") {
+            name = v.trim().trim_matches('"');
+        } else if let Some(v) = line.strip_prefix("VERSION_ID=") {
+            version = v.trim().trim_matches('"');
+        }
+    }
+    format!("{name} {version}").trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +446,70 @@ Inactive:        150 kB
     fn parse_meminfo_falls_back_to_free_without_memavailable() {
         let m = parse_meminfo("MemTotal: 1000 kB\nMemFree: 400 kB\n");
         assert_eq!(m.available, 400 * 1024);
+    }
+
+    #[test]
+    fn parse_diskstats_reads_counts_and_sector_bytes() {
+        // Real-shaped lines: sda has 14 base fields, loop0 too.
+        let content = "\
+   8       0 sda 1000 50 4000 120 2000 30 8000 200 0 300 420
+ 259       0 nvme0n1 5 0 40 1 7 0 80 2 0 3 6
+";
+        let m = parse_diskstats(content);
+        let sda = m.get("sda").unwrap();
+        // read_count, write_count, read_bytes (4000*512), write_bytes (8000*512)
+        assert_eq!(*sda, (1000, 2000, 4000 * 512, 8000 * 512));
+        assert!(m.contains_key("nvme0n1"));
+    }
+
+    #[test]
+    fn parse_diskstats_skips_short_lines() {
+        assert!(parse_diskstats("8 0 sda 1 2 3\n").is_empty());
+    }
+
+    #[test]
+    fn parse_swap_reads_bytes_and_cumulative_counters() {
+        let meminfo = "\
+MemTotal:       1000 kB
+SwapTotal:      2000 kB
+SwapFree:        500 kB
+";
+        let vmstat = "\
+nr_free_pages 12345
+pswpin 10
+pswpout 7
+";
+        // page_size = 4096: sin = 10*4096, sout = 7*4096.
+        let s = parse_swap(meminfo, vmstat, 4096);
+        assert_eq!(s.total, 2000 * 1024);
+        assert_eq!(s.free, 500 * 1024);
+        assert_eq!(s.used, (2000 - 500) * 1024);
+        assert_eq!(s.percent, 75.0); // 1500/2000
+        assert_eq!(s.sin, 10 * 4096);
+        assert_eq!(s.sout, 7 * 4096);
+    }
+
+    #[test]
+    fn parse_swap_without_swap_is_all_zero() {
+        let s = parse_swap("MemTotal: 1000 kB\n", "pswpin 0\n", 4096);
+        assert_eq!(s.total, 0);
+        assert_eq!(s.percent, 0.0);
+    }
+
+    #[test]
+    fn parse_os_release_combines_name_and_version_id() {
+        let content = "\
+PRETTY_NAME=\"Ubuntu 22.04.3 LTS\"
+NAME=\"Ubuntu\"
+VERSION_ID=\"22.04\"
+ID=ubuntu
+";
+        assert_eq!(parse_os_release(content), "Ubuntu 22.04");
+    }
+
+    #[test]
+    fn parse_os_release_tolerates_unquoted_and_missing_fields() {
+        assert_eq!(parse_os_release("NAME=Arch\n"), "Arch");
+        assert_eq!(parse_os_release(""), "");
     }
 }

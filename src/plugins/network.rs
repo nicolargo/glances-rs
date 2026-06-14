@@ -1,24 +1,29 @@
 //! `network` plugin — rate, collection: one item per interface, primary
 //! key `interface_name` (ARCHITECTURE.md §8.1). Payload: docs/api.md §5.4.
 //!
-//! On Linux each item also carries `is_up` and `speed` (from
-//! `/sys/class/net`). `alias` comes from `[plugins.network].alias` on every
-//! platform (null when unset), mirroring Glances.
+//! Glances v5 shape: items under `data`; `bytes_recv`/`bytes_sent`/`bytes_all`
+//! are **plain per-second rates**; one top-level `time_since_update` +
+//! `_levels`. On Linux each item also carries `is_up` and `speed` (from
+//! `/sys/class/net`). Docker and loopback interfaces are hidden by default.
 
-use super::{Plugin, PluginId, RATE_WARMUP, round1, round3};
+use super::filter::{KeyFilter, hide_or_default};
+use super::{Plugin, PluginId, RATE_WARMUP, envelope, round1};
 use crate::config::Config;
-use regex_lite::Regex;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use sysinfo::Networks;
+
+/// Default `hide` when the operator configures none: docker bridges and the
+/// loopback interface.
+const DEFAULT_HIDE: &[&str] = &["docker.*", "lo"];
 
 /// Cumulative (rx, tx) byte counters for one interface.
 type Counters = (u64, u64);
 
 pub struct NetworkPlugin {
     refresh: Duration,
-    filter: InterfaceFilter,
+    filter: KeyFilter,
     /// Interface name -> operator-defined alias.
     alias: HashMap<String, String>,
 }
@@ -26,42 +31,16 @@ pub struct NetworkPlugin {
 impl NetworkPlugin {
     pub fn new(config: &Config) -> Self {
         let plugin = config.plugins.get(PluginId::Network.as_str());
+        let show = plugin.map(|p| p.show.clone()).unwrap_or_default();
+        let hide = hide_or_default(
+            plugin.map(|p| p.hide.clone()).unwrap_or_default(),
+            DEFAULT_HIDE,
+        );
         Self {
             refresh: config.refresh_for(PluginId::Network.as_str()),
-            filter: InterfaceFilter::new(
-                plugin.map(|p| p.show.as_slice()).unwrap_or_default(),
-                plugin.map(|p| p.hide.as_slice()).unwrap_or_default(),
-            ),
+            filter: KeyFilter::new(&show, &hide),
             alias: plugin.map(|p| p.alias.clone()).unwrap_or_default(),
         }
-    }
-}
-
-/// `show`/`hide` regex lists on the interface name. `hide` wins; an empty
-/// `show` list means "everything". Patterns are validated at config load,
-/// so a plugin only ever sees compilable ones.
-pub struct InterfaceFilter {
-    show: Vec<Regex>,
-    hide: Vec<Regex>,
-}
-
-impl InterfaceFilter {
-    pub fn new(show: &[String], hide: &[String]) -> Self {
-        let compile = |patterns: &[String]| {
-            patterns
-                .iter()
-                .map(|p| Regex::new(p).expect("regex validated by Config::validate"))
-                .collect()
-        };
-        Self {
-            show: compile(show),
-            hide: compile(hide),
-        }
-    }
-
-    fn shown(&self, name: &str) -> bool {
-        let shown = self.show.is_empty() || self.show.iter().any(|re| re.is_match(name));
-        shown && !self.hide.iter().any(|re| re.is_match(name))
     }
 }
 
@@ -132,11 +111,11 @@ impl Plugin for NetworkPlugin {
             &self.alias,
         );
         state.previous = previous;
-        Value::Array(items)
+        envelope(Value::Array(items), elapsed)
     }
 }
 
-fn sample(networks: &Networks, filter: &InterfaceFilter) -> HashMap<String, Counters> {
+fn sample(networks: &Networks, filter: &KeyFilter) -> HashMap<String, Counters> {
     networks
         .iter()
         .filter(|(name, _)| filter.shown(name))
@@ -199,19 +178,14 @@ fn step(
             let all = recv.saturating_add(sent);
             let mut item = json!({
                 "interface_name": name,
-                // alias is always present (null when unset), matching Glances.
-                "alias": alias.get(name).map(|a| json!(a)).unwrap_or(Value::Null),
-                "bytes_recv": recv,
-                "bytes_recv_gauge": rx,
-                "bytes_recv_rate_per_sec": per_sec(recv, elapsed),
-                "bytes_sent": sent,
-                "bytes_sent_gauge": tx,
-                "bytes_sent_rate_per_sec": per_sec(sent, elapsed),
-                "bytes_all": all,
-                "bytes_all_gauge": rx.saturating_add(tx),
-                "bytes_all_rate_per_sec": per_sec(all, elapsed),
-                "time_since_update": round3(elapsed),
+                "bytes_recv": per_sec(recv, elapsed),
+                "bytes_sent": per_sec(sent, elapsed),
+                "bytes_all": per_sec(all, elapsed),
             });
+            // alias only when configured for this interface (Glances v5).
+            if let Some(a) = alias.get(name) {
+                item["alias"] = json!(a);
+            }
             if let Some(m) = meta.get(name) {
                 if let Some(is_up) = m.is_up {
                     item["is_up"] = json!(is_up);
@@ -231,6 +205,7 @@ fn step(
     (items, current)
 }
 
+/// Per-second rate of a counter delta over the measured interval.
 fn per_sec(delta: u64, elapsed: f64) -> f64 {
     if elapsed > 0.0 {
         round1(delta as f64 / elapsed)
@@ -259,22 +234,21 @@ mod tests {
     }
 
     #[test]
-    fn nominal_rate() {
+    fn nominal_rates_are_per_second() {
         let prev = counters(&[("eth0", 1_000, 2_000)]);
         let cur = counters(&[("eth0", 2_000, 2_500)]);
         let (items, _) = step(prev, cur, 2.0, &no_meta(), &no_alias());
         assert_eq!(items.len(), 1);
         let item = &items[0];
         assert_eq!(item["interface_name"], "eth0");
-        assert_eq!(item["bytes_recv"], 1_000);
-        assert_eq!(item["bytes_recv_gauge"], 2_000);
-        assert_eq!(item["bytes_recv_rate_per_sec"], 500.0);
-        assert_eq!(item["bytes_sent"], 500);
-        assert_eq!(item["bytes_all"], 1_500);
-        assert_eq!(item["bytes_all_rate_per_sec"], 750.0);
-        assert_eq!(item["time_since_update"], 2.0);
-        // alias is always present, null when unset.
-        assert_eq!(item["alias"], Value::Null);
+        assert_eq!(item["bytes_recv"], 500.0); // (2000-1000)/2
+        assert_eq!(item["bytes_sent"], 250.0); // (2500-2000)/2
+        assert_eq!(item["bytes_all"], 750.0);
+        // v5: plain rates only, no gauge / rate_per_sec / per-item tsu.
+        assert!(item.get("bytes_recv_gauge").is_none());
+        assert!(item.get("time_since_update").is_none());
+        // No alias key when none configured.
+        assert!(item.get("alias").is_none());
     }
 
     #[test]
@@ -283,9 +257,8 @@ mod tests {
         let prev = counters(&[("eth0", 5_000, 5_000)]);
         let cur = counters(&[("eth0", 100, 200)]);
         let (items, _) = step(prev, cur, 2.0, &no_meta(), &no_alias());
-        assert_eq!(items[0]["bytes_recv"], 0);
-        assert_eq!(items[0]["bytes_sent"], 0);
-        assert_eq!(items[0]["bytes_recv_rate_per_sec"], 0.0);
+        assert_eq!(items[0]["bytes_recv"], 0.0);
+        assert_eq!(items[0]["bytes_sent"], 0.0);
     }
 
     #[test]
@@ -339,23 +312,5 @@ mod tests {
         assert_eq!(items[0]["is_up"], true);
         assert_eq!(items[0]["speed"], 1_048_576_000u64);
         assert_eq!(items[0]["alias"], "LAN");
-    }
-
-    #[test]
-    fn filter_show_and_hide() {
-        let all = InterfaceFilter::new(&[], &[]);
-        assert!(all.shown("lo"));
-        assert!(all.shown("eth0"));
-
-        let no_lo = InterfaceFilter::new(&[], &["^lo$".into()]);
-        assert!(!no_lo.shown("lo"));
-        assert!(no_lo.shown("eth0"));
-
-        // hide wins over show.
-        let eth_only = InterfaceFilter::new(&["^eth".into()], &["^eth1$".into()]);
-        assert!(eth_only.shown("eth0"));
-        assert!(!eth_only.shown("eth1"));
-        assert!(!eth_only.shown("wlan0"));
-        assert!(!eth_only.shown("lo"));
     }
 }

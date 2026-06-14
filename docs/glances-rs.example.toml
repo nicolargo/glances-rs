@@ -36,16 +36,24 @@ idle_cycles = 5
 # How long a waking request waits for the first cycle before answering 503.
 guard_timeout = 5.0
 
-# Per-plugin sections (cpu, load, mem, network) — all optional.
+# Per-plugin sections (cpu, diskio, fs, load, mem, memswap, network, system,
+# uptime) — all optional.
 # [plugins.cpu]
 # refresh = 1.0
 #
+# The collection plugins (network, fs, diskio) take show/hide regex lists on
+# their primary key (interface name / mount point / disk name) and an alias
+# table. Each ships a DEFAULT hide list, used only when you set no `hide`;
+# providing your own `hide` replaces the default entirely.
+#   network default hide: ["docker.*", "lo"]
+#   fs      default hide: ["/boot.*", ".*/snap.*"]
+#   diskio  default hide: ["loop.*", "/dev/loop.*"]
+#
 # [plugins.network]
 # enabled = true
-# Regex allow/deny lists on the interface name (not defaults — examples):
-# show = ["^eth", "^en"]
-# hide = ["^lo$"]
+# show = ["^eth", "^en"]   # allow-list (optional)
+# hide = ["^lo$"]          # replaces the default docker.*/lo hide
 #
-# Per-interface display alias (surfaced verbatim in the `alias` field):
+# Per-interface display alias (added to an item only when configured):
 # [plugins.network.alias]
 # eth0 = "LAN"

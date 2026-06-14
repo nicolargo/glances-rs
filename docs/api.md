@@ -11,9 +11,9 @@
 
 | Route                    | Method | Response                                | Status codes |
 |--------------------------|--------|-----------------------------------------|--------------|
-| `/api/5/{plugin}`        | GET    | The plugin's payload (object or array)  | `200`, `404` unknown plugin, `503` collection did not start in time |
-| `/api/5/all`             | GET    | Object: `{ "<plugin>": <payload>, … }`  | `200` (possibly partial — see §3) |
-| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","load","mem","network"]` | `200` |
+| `/api/5/{plugin}`        | GET    | The plugin's payload in the v5 envelope (§4) | `200`, `404` unknown plugin, `503` collection did not start in time |
+| `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
+| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
@@ -40,13 +40,13 @@ check, no wake-up.
 |---|---|---|
 | Known plugin, no data yet | `200` with `null` body | **Waits** for the first collection cycle; `503` if it does not arrive within the guard timeout. A `200` always carries real data. |
 | Auth | Basic + Bearer token (`/token`) | Basic only (v1). |
-| `_levels` (alert metadata) | Present on every plugin | **Omitted in v1** — alerting is deferred (ARCHITECTURE.md §6.1, §8.1). This is the one remaining structural difference once full field parity is in place. |
+| `_levels` (alert thresholds) | Per-field threshold metadata | Present but **always `{}`** until alerting lands (v0.3.0; ARCHITECTURE.md §6.1, §8.1). The envelope key is there, the content is empty. |
 | Platform-specific fields | Present per platform/psutil | **Full field parity on Linux** (the primary target); macOS/Windows degrade to the portable subset `sysinfo` exposes. Clients treat absent fields as "not available", exactly as with Glances' platform-specific fields. |
 
-> **Field parity (Linux).** `glances-rs` reads `/proc/stat`, `/proc/meminfo`
-> and `/sys/class/net` directly so the Linux payloads match the Glances v5
-> field set field-for-field (minus `_levels`). JSON object key *order* may
-> differ — objects are unordered, so this is not a contract difference.
+> **Field parity (Linux).** `glances-rs` reads `/proc/stat`, `/proc/meminfo`,
+> `/sys/class/net`, `/proc/vmstat` and `/proc/diskstats` directly so the Linux
+> payloads match the Glances v5 field set. JSON object key *order* may differ —
+> objects are unordered, so this is not a contract difference.
 
 ## 3. `/all` partial-failure policy
 
@@ -56,18 +56,45 @@ plugin that produced data; a plugin that exceeded the guard timeout is
 (ARCHITECTURE.md §6.3). Clients needing per-plugin failure semantics should
 query `/api/5/{plugin}` and rely on `503`.
 
-## 4. Rate-field convention (inherited from Glances)
+## 4. Response envelope and rate convention (Glances v5)
 
-For every cumulative-counter field `X` marked *rate* below, the payload
-carries three values plus a shared timestamp field:
+**Every** plugin response is wrapped in the v5 envelope, which adds two
+top-level keys to the plugin's stats:
 
-- `X` — delta of the counter over the last interval;
-- `X_gauge` — the raw cumulative counter;
-- `X_rate_per_sec` — `X / time_since_update`;
-- `time_since_update` — measured seconds (float) between the two samples
-  (real `Instant` elapsed, never the nominal refresh — ARCHITECTURE.md §5.4).
+- `time_since_update` — measured seconds (float) since the plugin's previous
+  cycle (real `Instant` elapsed, never the nominal refresh — ARCHITECTURE.md
+  §5.4); `0.0` on the very first cycle of an instantaneous plugin.
+- `_levels` — alert-threshold metadata, **always `{}`** until alerting
+  (v0.3.0).
+
+The wrapping depends on the plugin's stat type:
+
+- **Object plugins** (`mem`, `cpu`, `load`, `system`, `uptime`, `memswap`) —
+  the stat fields sit at the **top level**, next to `time_since_update` and
+  `_levels`:
+  ```json
+  { "seconds": 71988, "time_since_update": 2.004, "_levels": {} }
+  ```
+- **Collection plugins** (`network`, `fs`, `diskio`) — the per-item array is
+  placed under a **`data`** key:
+  ```json
+  { "data": [ { … }, { … } ], "time_since_update": 2.004, "_levels": {} }
+  ```
+
+**Rate fields are plain per-second rates.** A cumulative-counter field `X`
+marked *rate* (network `bytes_*`, diskio `read_*`/`write_*`, memswap
+`sin`/`sout`, cpu `ctx_switches`/`interrupts`/`soft_interrupts`) is reported as
+a single value — the counter delta divided by `time_since_update`, to 1
+decimal. There is **no** `X_gauge` or `X_rate_per_sec` companion (that was the
+v4 shape); the per-item objects of a collection plugin carry no
+`time_since_update` either — it lives once at the envelope top level.
 
 ## 5. Payload schemas
+
+> Each example shows the plugin's **stats**; per §4 every response is wrapped
+> in the envelope — object plugins gain top-level `time_since_update` and
+> `_levels`, collection plugins are nested under `data`. Only the envelope is
+> shown explicitly where it matters (the collection plugins and `uptime`).
 
 ### 5.1 `mem` — object, instantaneous
 
@@ -145,43 +172,169 @@ carries three values plus a shared timestamp field:
   `total`/`cpucore`/`time_since_update` (`sysinfo`'s `global_cpu_usage`),
   with the §5.5 warm-up against `sysinfo`'s minimum refresh interval.
 
-### 5.4 `network` — **array** of objects (collection plugin), rate
+### 5.4 `network` — collection plugin (items under `data`), rate
 
 One element per interface; primary key `interface_name`:
 
 ```json
-[
-  {
-    "interface_name":          "eth0",
-    "alias":                   null,
-    "bytes_recv":              1024,
-    "bytes_recv_gauge":        1548273,
-    "bytes_recv_rate_per_sec": 511.2,
-    "bytes_sent":              2048,
-    "bytes_sent_gauge":        5153559,
-    "bytes_sent_rate_per_sec": 1022.4,
-    "bytes_all":               3072,
-    "bytes_all_gauge":         6701832,
-    "bytes_all_rate_per_sec":  1533.6,
-    "speed":                   0,
-    "is_up":                   true,
-    "time_since_update":       2.004
-  }
-]
+{
+  "data": [
+    {
+      "interface_name": "eth0",
+      "bytes_recv":     511.2,
+      "bytes_sent":     1022.4,
+      "bytes_all":      1533.6,
+      "speed":          0,
+      "is_up":          true
+    }
+  ],
+  "time_since_update": 2.004,
+  "_levels": {}
+}
 ```
 
+- `bytes_recv`/`bytes_sent`/`bytes_all` are **per-second rates** (bytes/s, 1
+  decimal). No `_gauge`/`_rate_per_sec` companions.
 - Interfaces filtered by the configured `show`/`hide` regexes on
-  `interface_name`, applied before rate computation. No filtering by
-  default (loopback included, as in Glances).
+  `interface_name`, applied before rate computation. **Default hide:**
+  `docker.*` and `lo` (set an explicit `hide` in config to override).
 - An interface that just appeared is absent for one cycle (no previous
   sample to diff against); an interface that disappeared drops out
   immediately.
-- `alias` comes from `[plugins.network].alias` (a `name = "alias"` table);
-  `null` when unset. Present on every platform.
+- `alias` from `[plugins.network].alias` (a `name = "alias"` table) is added
+  to an item **only when configured** for it (absent otherwise), as in
+  Glances v5.
 - **Linux:** `is_up` (from the interface `IFF_UP` flag) and `speed` (link
   speed in bits/s — Mbps × 1048576, `0` when unknown) are added, both from
   `/sys/class/net`. **macOS/Windows:** `is_up`/`speed` are omitted
   (`sysinfo` does not expose them).
+
+### 5.5 `system` — object, instantaneous
+
+```json
+{
+  "os_name":      "Linux",
+  "hostname":     "server1",
+  "platform":     "64bit",
+  "os_version":   "6.18.5",
+  "linux_distro": "Ubuntu 22.04",
+  "hr_name":      "Ubuntu 22.04 64bit / Linux 6.18.5"
+}
+```
+
+- `os_name` is the capitalized OS family (`platform.system()` in Glances:
+  `Linux`/`Windows`/`Darwin`/…); `platform` is the pointer width
+  (`64bit`/`32bit`); `os_version` is the kernel release on Linux.
+- **Linux:** `linux_distro` is `NAME VERSION_ID` from `/etc/os-release`, and
+  `hr_name` is composed as `"{linux_distro} {platform} / {os_name}
+  {os_version}"` — the Glances format.
+- **macOS/Windows:** `linux_distro` is omitted; `hr_name` degrades to
+  `"{os_name} {os_version} {platform}"`, as Glances does off Linux.
+
+### 5.6 `uptime` — object, instantaneous
+
+```json
+{
+  "seconds": 71988,
+  "time_since_update": 2.004,
+  "_levels": {}
+}
+```
+
+- A single `seconds` field (integer seconds since boot) plus the envelope —
+  the Glances v5 REST shape. (The v4 shape was a bare `str(timedelta)` string;
+  v5 serializes the integer.)
+- Same on every platform (`sysinfo::System::uptime`).
+
+### 5.7 `memswap` — object, part-rate
+
+```json
+{
+  "total":             4294963200,
+  "used":              1073737728,
+  "free":              3221225472,
+  "percent":           25.0,
+  "sin":               2048.0,
+  "sout":              512.0,
+  "time_since_update": 2.004
+}
+```
+
+- `total`/`used`/`free` in bytes; `percent = used / total * 100`
+  (`used = total - free`), `0.0` when there is no swap.
+- `sin`/`sout` are **per-second rates** (bytes/s, 1 decimal): the cumulative
+  `/proc/vmstat` page-swap counters diffed over `time_since_update` (§4). `0.0`
+  on the first cycle (the warm-up baseline).
+- **Linux** (`/proc/meminfo` + `/proc/vmstat`): full field set; `sin`/`sout`
+  use the kernel page size (`sysconf(_SC_PAGESIZE)`). **macOS/Windows:**
+  degrade to `total`/`used`/`free`/`percent`; `sin`/`sout` are omitted
+  (`sysinfo` does not expose the swap counters).
+
+### 5.8 `fs` — collection plugin (items under `data`), instantaneous
+
+One element per mounted filesystem; primary key `mnt_point`:
+
+```json
+{
+  "data": [
+    {
+      "device_name": "/dev/vda1",
+      "fs_type":     "ext4",
+      "mnt_point":   "/",
+      "size":        270553174016,
+      "used":        240020131840,
+      "free":        30533042176,
+      "percent":     88.7
+    }
+  ],
+  "time_since_update": 2.004,
+  "_levels": {}
+}
+```
+
+- All sizes in bytes; `free` is the space available to the caller,
+  `used = size - free`, `percent = used / size * 100` (1 decimal). This
+  slightly overstates usage versus psutil's root-reserve-aware percent (which
+  excludes blocks reserved for root); the gap is the reserved fraction. It
+  will be revisited when alerting (v0.3.0) needs exact thresholds.
+- Filesystems are filtered by the configured `show`/`hide` regexes on
+  `mnt_point`. **Default hide:** `/boot.*` and `.*/snap.*`. `alias` from
+  `[plugins.fs].alias` keyed by mount point is added **only when configured**.
+- **Omitted vs. Glances:** `key` (the primary-key name, dropped for every
+  collection plugin here — see `network`) and `options` (mount flags;
+  `sysinfo` does not expose them). Same payload on every platform.
+
+### 5.9 `diskio` — collection plugin (items under `data`), rate
+
+One element per disk; primary key `disk_name`:
+
+```json
+{
+  "data": [
+    {
+      "disk_name":   "sda",
+      "read_count":  6.0,
+      "write_count": 20.0,
+      "read_bytes":  24576.0,
+      "write_bytes": 81920.0
+    }
+  ],
+  "time_since_update": 2.004,
+  "_levels": {}
+}
+```
+
+- `read_count`/`write_count`/`read_bytes`/`write_bytes` are **per-second
+  rates** (1 decimal), diffed from the cumulative `/proc/diskstats` counters
+  over `time_since_update` (§4). `*_bytes` derive from sectors × 512. A disk
+  absent from the previous sample is skipped for one cycle; a removed disk
+  drops out immediately (§8.1).
+- Disks are filtered by the configured `show`/`hide` regexes on `disk_name`.
+  **Default hide:** `loop.*` and `/dev/loop.*`. `alias` from
+  `[plugins.diskio].alias` is added **only when configured**.
+- **Linux only** (`/proc/diskstats`). `sysinfo` exposes no per-disk I/O, so
+  **macOS/Windows return an empty `data` array**. `read_time`/`write_time` and
+  the derived latency fields (present in Glances) are omitted.
 
 ---
 

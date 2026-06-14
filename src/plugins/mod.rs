@@ -2,14 +2,21 @@
 //! v1 plugins: `mem`, `cpu`, `load`, `network` (§8).
 
 pub mod cpu;
+pub mod diskio;
+pub mod filter;
+pub mod fs;
 pub mod load;
 pub mod mem;
+pub mod memswap;
 pub mod network;
+pub mod system;
+pub mod uptime;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
 
-use std::time::Duration;
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 
 /// Warm-up delay for rate plugins' self-bootstrap (§5.5): `sysinfo`'s
 /// minimum CPU-refresh interval (200 ms on Linux/macOS/Windows) plus a
@@ -27,29 +34,80 @@ pub(crate) fn round3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
 }
 
+/// Wrap a plugin's raw stats in the Glances v5 REST envelope: a list goes
+/// under `data`, a dict keeps its fields at the top level; both gain a
+/// top-level `time_since_update` and `_levels` (empty `{}` until alerting
+/// lands in v0.3.0). Every plugin's `collect()` returns through this.
+pub(crate) fn envelope(stats: Value, time_since_update: f64) -> Value {
+    let mut out = match stats {
+        Value::Array(items) => json!({ "data": items }),
+        other => other,
+    };
+    if let Some(map) = out.as_object_mut() {
+        map.insert("time_since_update".into(), json!(round3(time_since_update)));
+        map.insert("_levels".into(), json!({}));
+    }
+    out
+}
+
+/// Inter-cycle stopwatch for `time_since_update`. Instantaneous plugins keep
+/// one to report the elapsed seconds since their previous cycle; rate plugins
+/// already measure their own interval and don't need it.
+#[derive(Default)]
+pub struct Clock {
+    last: Option<Instant>,
+}
+
+impl Clock {
+    /// Seconds since the previous tick (`0.0` on the first), advancing it.
+    pub fn tick(&mut self) -> f64 {
+        let now = Instant::now();
+        let dt = self
+            .last
+            .map_or(0.0, |l| now.duration_since(l).as_secs_f64());
+        self.last = Some(now);
+        dt
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PluginId {
     Cpu,
+    Diskio,
+    Fs,
     Load,
     Mem,
+    MemSwap,
     Network,
+    System,
+    Uptime,
 }
 
 impl PluginId {
-    /// Every plugin in the v1 contract — all implemented since Phase 4.
-    pub const ALL: [PluginId; 4] = [
+    /// Every plugin this build exposes (the v1 four plus the v0.2.0 additions).
+    pub const ALL: [PluginId; 9] = [
         PluginId::Cpu,
+        PluginId::Diskio,
+        PluginId::Fs,
         PluginId::Load,
         PluginId::Mem,
+        PluginId::MemSwap,
         PluginId::Network,
+        PluginId::System,
+        PluginId::Uptime,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             PluginId::Cpu => "cpu",
+            PluginId::Diskio => "diskio",
+            PluginId::Fs => "fs",
             PluginId::Load => "load",
             PluginId::Mem => "mem",
+            PluginId::MemSwap => "memswap",
             PluginId::Network => "network",
+            PluginId::System => "system",
+            PluginId::Uptime => "uptime",
         }
     }
 
@@ -57,9 +115,14 @@ impl PluginId {
     pub fn parse(name: &str) -> Option<PluginId> {
         match name {
             "cpu" => Some(PluginId::Cpu),
+            "diskio" => Some(PluginId::Diskio),
+            "fs" => Some(PluginId::Fs),
             "load" => Some(PluginId::Load),
             "mem" => Some(PluginId::Mem),
+            "memswap" => Some(PluginId::MemSwap),
             "network" => Some(PluginId::Network),
+            "system" => Some(PluginId::System),
+            "uptime" => Some(PluginId::Uptime),
             _ => None,
         }
     }
