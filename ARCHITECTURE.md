@@ -458,17 +458,35 @@ These settings directly serve the single-binary requirement. Note
 acceptable for a supervised server, but a deliberate choice. Drop that line if
 unwinding robustness is preferred.
 
+> **Resolved (Phase 7): keep `panic = "abort"`.** The deployment model is a
+> supervised service (systemd/Docker restart policies), so a fatal panic
+> turns into a clean restart rather than a corrupt half-state. It also keeps
+> the binary smaller (no unwinding tables), which serves the footprint goal.
+> The alternative — unwinding so a panicking collector task can't take down
+> the server — was weighed and rejected: it would leave a *stale registry
+> entry* for the dead collector (its `watch` sender dropped), making that
+> plugin answer `503` forever, i.e. a silent partial failure. For a
+> monitoring tool a loud crash-and-restart is a better signal than a
+> silently broken plugin, and the collection paths are written to not panic
+> (`saturating_sub`, `?`, `unwrap_or`). Revisit only if per-plugin panic
+> isolation (with registry cleanup on task death) is later deemed worth it.
+
 ---
 
 ## 10. Open questions for implementation
 
-- Verify the `sysinfo` minimum CPU-refresh delay and align the `cpu` plugin's
-  warm-up with it (section 4).
-- Confirm the `/all` partial-failure policy (section 6.3).
-- Confirm `panic = "abort"` (section 9).
-- Decide the exact JSON shape of each plugin's payload against the Glances v5
-  contract before implementing handlers.
-- Choose the config file location / discovery order.
+All resolved during implementation (see `DEVELOPMENT_PLAN.md` for the phase
+that closed each):
+
+- ~~Verify the `sysinfo` minimum CPU-refresh delay~~ → 200 ms; warm-up set to
+  250 ms (Phase 1, `docs/api.md` §6).
+- ~~Confirm the `/all` partial-failure policy~~ → `200` with the failed plugin
+  absent (Phase 5, §6.3).
+- ~~Confirm `panic = "abort"`~~ → kept; rationale recorded in §9 (Phase 7).
+- ~~Decide the exact JSON shape of each plugin's payload~~ → full Glances v5
+  parity on Linux, frozen in `docs/api.md` §5 (Phase 1, extended Phase 4.1).
+- ~~Choose the config file location / discovery order~~ → frozen in
+  `docs/api.md` §7 (Phase 1).
 
 ---
 

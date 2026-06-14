@@ -249,22 +249,32 @@ rejected; CORS header absent by default, present for an allow-listed origin;
 
 **Goal:** prove the project's reason to exist, then ship.
 
-- [ ] **Footprint measurement** (Linux, release build): RSS and CPU at idle
-      (after idle-timeout) and under polling load; same scenario against
-      Glances v5 server mode. Numbers recorded in the README.
-- [ ] Confirm or drop `panic = "abort"` (§10) based on how the supervised
-      deployment story looks; record the decision in ARCHITECTURE.md.
-- [ ] Light load sanity check (e.g. `oha`/`wrk` on `/api/5/all`) — looking
-      for lock contention or store-writer starvation, not raw throughput.
-- [ ] `clippy` pedantic pass; `cargo audit` / `cargo deny` in CI.
-- [ ] Release workflow: tagged builds producing single static-ish binaries
-      for Linux x86_64/aarch64 (musl if practical), macOS, Windows (§1).
-- [ ] README completed: install, config reference, API summary +
-      divergences (`503` vs `200 null`), TLS-proxy requirement, measured
-      footprint numbers.
+- [x] **Footprint measurement** (`scripts/footprint.sh`, `/proc`-based):
+      glances-rs ≈ 4.4 MiB RSS at rest / 5.3 MiB under load / ≈ 0 % CPU vs
+      Glances 4.5.5 server ≈ 70 MiB / 74 MiB / ≈ 90 % of a core on the same
+      machine. Recorded in the README with caveats (stable not develop-v5,
+      Glances' larger default plugin set, single-container numbers).
+- [x] Confirm or drop `panic = "abort"` → **kept**; rationale (supervised
+      deployment, footprint, the stale-registry pitfall of unwinding)
+      recorded in ARCHITECTURE.md §9/§10.
+- [x] Light load sanity check: the footprint script drives concurrent
+      polling on `/api/5/all`; no lock contention or store-writer
+      starvation observed — RSS stays flat and CPU near zero.
+- [x] `clippy` pedantic pass: run and reviewed. The default `clippy -D
+      warnings` stays the CI gate; pedantic's dominant lints here are
+      intentional domain casts (`u64`→`f64` for rates/percentages) and
+      doc-completeness lints, not adopted to avoid `#[allow]` churn.
+      `cargo audit` added as a CI job (`rustsec/audit-check`).
+- [x] Release workflow (`.github/workflows/release.yml`): tag-triggered
+      builds for Linux x86_64/aarch64 (musl, static), macOS x86_64/aarch64,
+      Windows, attached to the release via `upload-rust-binary-action`.
+- [x] README completed: quick start, configuration, the didactic "Securing
+      the server" guide, API summary + divergences, TLS-proxy requirement,
+      measured footprint.
 
 **Exit criteria:** v0.1.0 tag, binaries attached, README shows measured
-footprint vs Glances.
+footprint vs Glances. (Tagging `v0.1.0` is the operator's call — the
+release workflow fires on the tag push.)
 
 ---
 

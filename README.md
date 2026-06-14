@@ -185,6 +185,40 @@ loopback and reachable only through the proxy.
   your public hostname when exposing the server. This blocks spoofed-`Host`
   attacks.
 
+## Footprint
+
+The whole reason glances-rs exists is to serve the same API with a far
+smaller footprint than the Python original. Measured on the same machine
+with [`scripts/footprint.sh`](scripts/footprint.sh) (a `/proc`-based
+sampler — RSS at rest and the peak RSS + CPU under a steady polling load on
+`/api/.../all`):
+
+| | glances-rs (4 plugins) | Glances 4.5.5 server |
+|---|---|---|
+| RSS at rest (no client) | **≈ 4.4 MiB** | ≈ 70 MiB |
+| RSS under polling load | ≈ 5.3 MiB | ≈ 74 MiB |
+| CPU under the same load | **≈ 0 %** | ≈ 90 % of one core |
+| Binary / install | single 2.1 MiB binary | Python + ~30 deps |
+
+Roughly an order of magnitude less memory, and near-zero CPU where Glances
+saturates a core under the same request rate. Two design choices drive
+this: a compiled, GC-free runtime, and **lazy collection** — glances-rs
+collects nothing while no client is connected, whereas Glances' scheduler
+runs continuously (the footprint weakness its own v5 architecture document
+acknowledges).
+
+> **Honest caveats.** These numbers come from one container, not your
+> server, so treat them as indicative — run the script on your target for
+> real figures. The comparison uses Glances **4.5.5 stable** (not the
+> `develop-v5` branch) with its default plugin set, which is larger than
+> glances-rs's four; much of Glances' baseline RSS is the Python
+> interpreter plus FastAPI/uvicorn/psutil, independent of plugin count.
+
+```sh
+# Reproduce (Linux): start each server, then, on the same machine:
+scripts/footprint.sh "$(pgrep -n glances-rs)" http://127.0.0.1:61208/api/5/all
+```
+
 ## License
 
 [MIT](LICENSE)
