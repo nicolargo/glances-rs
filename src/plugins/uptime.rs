@@ -1,10 +1,10 @@
 //! `uptime` plugin — instantaneous. Payload: docs/api.md §5.6.
 //!
 //! Glances v5 returns `{"seconds": <int>}` wrapped in the standard envelope
-//! (`_levels`; no `time_since_update`, as uptime is instantaneous). The earlier
-//! `str(timedelta)` string was the v4 shape; v5 serializes the integer seconds.
+//! (`time_since_update` + `_levels`). The earlier `str(timedelta)` string was
+//! the v4 shape; v5 serializes the integer seconds.
 
-use super::{Plugin, PluginId, envelope};
+use super::{Clock, Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -23,7 +23,9 @@ impl UptimePlugin {
 }
 
 #[derive(Default)]
-pub struct UptimeState {}
+pub struct UptimeState {
+    clock: Clock,
+}
 
 #[async_trait::async_trait]
 impl Plugin for UptimePlugin {
@@ -37,8 +39,9 @@ impl Plugin for UptimePlugin {
         self.refresh
     }
 
-    async fn collect(&self, _state: &mut UptimeState) -> Value {
-        envelope(json!({ "seconds": System::uptime() }), None)
+    async fn collect(&self, state: &mut UptimeState) -> Value {
+        let tsu = state.clock.tick();
+        envelope(json!({ "seconds": System::uptime() }), tsu)
     }
 }
 
@@ -53,10 +56,9 @@ mod tests {
         let value = plugin.collect(&mut state).await;
 
         let obj = value.as_object().expect("uptime payload is an object");
-        // seconds is an integer count; the envelope adds _levels but, since
-        // uptime is instantaneous, no time_since_update.
+        // seconds is an integer count, plus the standard envelope fields.
         assert!(obj["seconds"].is_u64(), "seconds: {value}");
-        assert!(obj.get("time_since_update").is_none());
+        assert!(obj.contains_key("time_since_update"));
         assert_eq!(obj["_levels"], json!({}));
     }
 }

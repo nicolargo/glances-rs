@@ -2,10 +2,9 @@
 //! key `interface_name` (ARCHITECTURE.md §8.1). Payload: docs/api.md §5.4.
 //!
 //! Glances v5 shape: items under `data`; `bytes_recv`/`bytes_sent`/`bytes_all`
-//! are **plain per-second rates**; a single top-level `time_since_update` (rate
-//! plugin) and `_levels` sit on the envelope. On Linux each item also carries
-//! `is_up` and `speed` (from `/sys/class/net`). Docker and loopback interfaces
-//! are hidden by default.
+//! are **plain per-second rates**; one top-level `time_since_update` +
+//! `_levels`. On Linux each item also carries `is_up` and `speed` (from
+//! `/sys/class/net`). Docker and loopback interfaces are hidden by default.
 
 use super::filter::{KeyFilter, hide_or_default};
 use super::{Plugin, PluginId, RATE_WARMUP, envelope, round1};
@@ -112,7 +111,7 @@ impl Plugin for NetworkPlugin {
             &self.alias,
         );
         state.previous = previous;
-        envelope(Value::Array(items), Some(elapsed))
+        envelope(Value::Array(items), elapsed)
     }
 }
 
@@ -245,8 +244,7 @@ mod tests {
         assert_eq!(item["bytes_recv"], 500.0); // (2000-1000)/2
         assert_eq!(item["bytes_sent"], 250.0); // (2500-2000)/2
         assert_eq!(item["bytes_all"], 750.0);
-        // v5: plain rates only, no gauge / rate_per_sec / per-item tsu
-        // (time_since_update lives once at the envelope top level).
+        // v5: plain rates only, no gauge / rate_per_sec / per-item tsu.
         assert!(item.get("bytes_recv_gauge").is_none());
         assert!(item.get("time_since_update").is_none());
         // No alias key when none configured.

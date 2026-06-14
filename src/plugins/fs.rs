@@ -2,16 +2,15 @@
 //! one item per mounted filesystem, primary key `mnt_point` (§8.1).
 //! Payload: docs/api.md §5.8.
 //!
-//! Glances v5 shape: items under `data`, with `_levels` on the envelope. No
-//! `time_since_update`: `fs` is instantaneous (no rate). Sourced from
-//! `sysinfo::Disks`
+//! Glances v5 shape: items under `data`, a single top-level
+//! `time_since_update` + `_levels`. Sourced from `sysinfo::Disks`
 //! (cross-platform, like `network`). `used`/`percent` are derived as
 //! `size - free` (free = space available to the caller); this slightly
 //! overstates usage versus psutil's root-reserve-aware percent — revisit when
 //! alerting needs exact thresholds. `/boot` and snap mounts hidden by default.
 
 use super::filter::{KeyFilter, hide_or_default};
-use super::{Plugin, PluginId, envelope, round1};
+use super::{Clock, Plugin, PluginId, envelope, round1};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -46,12 +45,14 @@ impl FsPlugin {
 
 pub struct FsState {
     disks: Disks,
+    clock: Clock,
 }
 
 impl Default for FsState {
     fn default() -> Self {
         Self {
             disks: Disks::new(),
+            clock: Clock::default(),
         }
     }
 }
@@ -114,7 +115,7 @@ impl Plugin for FsPlugin {
             })
             .collect();
         items.sort_by(|a, b| a["mnt_point"].as_str().cmp(&b["mnt_point"].as_str()));
-        envelope(Value::Array(items), None)
+        envelope(Value::Array(items), state.clock.tick())
     }
 }
 
@@ -138,9 +139,8 @@ mod tests {
         let mut state = FsState::default();
         let value = plugin.collect(&mut state).await;
 
-        // v5 envelope: items under data, _levels on the envelope. fs is
-        // instantaneous, so there is no time_since_update.
-        assert!(value.get("time_since_update").is_none());
+        // v5 envelope: items under data, top-level tsu + _levels.
+        assert!(value["time_since_update"].is_number());
         assert_eq!(value["_levels"], json!({}));
         let items = value["data"].as_array().expect("data is an array");
         for item in items {

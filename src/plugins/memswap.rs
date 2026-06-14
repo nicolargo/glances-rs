@@ -3,9 +3,8 @@
 //! A **part-rate** plugin: `total`/`used`/`free`/`percent` are instantaneous,
 //! while `sin`/`sout` are **per-second rates** (bytes swapped in/out per
 //! second), computed by diffing the cumulative `/proc/vmstat` counters over
-//! the measured interval — the Glances v5 shape. The payload is wrapped in the
-//! standard envelope (`_levels`); Glances does not expose a top-level
-//! `time_since_update` for memswap, so neither do we.
+//! the measured interval — the Glances v5 shape. The whole payload is wrapped
+//! in the standard envelope (`time_since_update` + `_levels`).
 //!
 //! On Linux the full field set is built; other platforms degrade to the
 //! `sysinfo` swap subset without `sin`/`sout`.
@@ -15,6 +14,8 @@ use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+#[cfg(not(target_os = "linux"))]
+use super::Clock;
 #[cfg(target_os = "linux")]
 use super::RATE_WARMUP;
 #[cfg(target_os = "linux")]
@@ -43,6 +44,8 @@ pub struct MemSwapState {
     last: Option<Instant>,
     #[cfg(not(target_os = "linux"))]
     sys: System,
+    #[cfg(not(target_os = "linux"))]
+    clock: Clock,
 }
 
 /// `(sin, sout)` per-second rates from two cumulative samples (§5.4:
@@ -95,7 +98,7 @@ impl Plugin for MemSwapPlugin {
         let Some(s) = super::linux::read_swap() else {
             return envelope(
                 json!({ "total": 0, "used": 0, "free": 0, "percent": 0.0, "sin": 0.0, "sout": 0.0 }),
-                None,
+                elapsed,
             );
         };
         let (sin, sout) = match state.prev {
@@ -112,12 +115,13 @@ impl Plugin for MemSwapPlugin {
                 "sin": sin,
                 "sout": sout,
             }),
-            None,
+            elapsed,
         )
     }
 
     #[cfg(not(target_os = "linux"))]
     async fn collect(&self, state: &mut MemSwapState) -> Value {
+        let tsu = state.clock.tick();
         state.sys.refresh_memory();
         let total = state.sys.total_swap();
         let free = state.sys.free_swap();
@@ -135,7 +139,7 @@ impl Plugin for MemSwapPlugin {
                 "free": free,
                 "percent": percent,
             }),
-            None,
+            tsu,
         )
     }
 }
@@ -163,11 +167,9 @@ mod tests {
         let value = plugin.collect(&mut state).await;
 
         let obj = value.as_object().expect("memswap payload is an object");
-        for field in ["total", "used", "free", "percent"] {
+        for field in ["total", "used", "free", "percent", "time_since_update"] {
             assert!(obj.contains_key(field), "missing field {field}");
         }
-        // memswap carries sin/sout rates but no top-level time_since_update.
-        assert!(obj.get("time_since_update").is_none());
         assert_eq!(obj["_levels"], json!({}));
         let percent = obj["percent"].as_f64().unwrap();
         assert!((0.0..=100.0).contains(&percent), "percent = {percent}");

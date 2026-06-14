@@ -4,8 +4,7 @@
 //! Glances v5 shape: the items live under `data`, each carrying the four
 //! counters as **plain per-second rates** (`read_count`/`write_count`/
 //! `read_bytes`/`write_bytes`), with a single top-level `time_since_update`
-//! (rate plugin) and `_levels` on the envelope. Loop and ram devices are
-//! hidden by default.
+//! and `_levels`. Loop and ram devices are hidden by default.
 //!
 //! Linux-only: counters come from `/proc/diskstats`. `sysinfo` exposes no
 //! per-disk I/O, so other platforms return an empty `data` array.
@@ -17,6 +16,8 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Duration;
 
+#[cfg(not(target_os = "linux"))]
+use super::Clock;
 #[cfg(target_os = "linux")]
 use super::{RATE_WARMUP, round1};
 #[cfg(target_os = "linux")]
@@ -60,6 +61,8 @@ pub struct DiskioState {
     previous: HashMap<String, Counters>,
     #[cfg(target_os = "linux")]
     last: Option<Instant>,
+    #[cfg(not(target_os = "linux"))]
+    clock: Clock,
 }
 
 #[async_trait::async_trait]
@@ -99,14 +102,13 @@ impl Plugin for DiskioPlugin {
             &self.alias,
         );
         state.previous = previous;
-        envelope(Value::Array(items), Some(elapsed))
+        envelope(Value::Array(items), elapsed)
     }
 
     #[cfg(not(target_os = "linux"))]
-    async fn collect(&self, _state: &mut DiskioState) -> Value {
-        // No per-disk I/O counters off Linux (sysinfo does not expose them):
-        // an empty list and no measured interval, hence no time_since_update.
-        envelope(Value::Array(Vec::new()), None)
+    async fn collect(&self, state: &mut DiskioState) -> Value {
+        // No per-disk I/O counters off Linux (sysinfo does not expose them).
+        envelope(Value::Array(Vec::new()), state.clock.tick())
     }
 }
 
@@ -195,8 +197,7 @@ mod tests {
         assert_eq!(item["write_count"], 15.0); // (230-200)/2
         assert_eq!(item["read_bytes"], 1_000.0); // (6000-4000)/2
         assert_eq!(item["write_bytes"], 500.0); // (9000-8000)/2
-        // No gauge / rate_per_sec / per-item time_since_update in v5
-        // (time_since_update lives once at the envelope top level).
+        // No gauge / rate_per_sec / per-item time_since_update in v5.
         assert!(item.get("read_count_gauge").is_none());
         assert!(item.get("time_since_update").is_none());
         // No alias key when none configured.

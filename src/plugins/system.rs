@@ -4,7 +4,7 @@
 //! lazy engine like any other. On Linux the `linux_distro` field is read from
 //! `/etc/os-release` (the Glances source); other platforms omit it.
 
-use super::{Plugin, PluginId, envelope};
+use super::{Clock, Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -49,8 +49,7 @@ fn platform_bits() -> &'static str {
 
 #[async_trait::async_trait]
 impl Plugin for SystemPlugin {
-    // Instantaneous host identity: no state, no time_since_update.
-    type State = ();
+    type State = Clock;
 
     fn id(&self) -> PluginId {
         PluginId::System
@@ -61,7 +60,7 @@ impl Plugin for SystemPlugin {
     }
 
     #[cfg(target_os = "linux")]
-    async fn collect(&self, _state: &mut ()) -> Value {
+    async fn collect(&self, clock: &mut Clock) -> Value {
         let hostname = System::host_name().unwrap_or_default();
         let os_name = os_name();
         let platform = platform_bits();
@@ -79,12 +78,12 @@ impl Plugin for SystemPlugin {
                 "linux_distro": linux_distro,
                 "hr_name": hr_name,
             }),
-            None,
+            clock.tick(),
         )
     }
 
     #[cfg(not(target_os = "linux"))]
-    async fn collect(&self, _state: &mut ()) -> Value {
+    async fn collect(&self, clock: &mut Clock) -> Value {
         let hostname = System::host_name().unwrap_or_default();
         let os_name = os_name();
         let platform = platform_bits();
@@ -99,7 +98,7 @@ impl Plugin for SystemPlugin {
                 "os_version": os_version,
                 "hr_name": hr_name,
             }),
-            None,
+            clock.tick(),
         )
     }
 }
@@ -111,7 +110,7 @@ mod tests {
     #[tokio::test]
     async fn collect_matches_the_frozen_schema() {
         let plugin = SystemPlugin::new(&Config::default());
-        let value = plugin.collect(&mut ()).await;
+        let value = plugin.collect(&mut Clock::default()).await;
 
         let obj = value.as_object().expect("system payload is an object");
         for field in ["os_name", "hostname", "platform", "os_version", "hr_name"] {
@@ -127,7 +126,7 @@ mod tests {
     #[tokio::test]
     async fn linux_payload_carries_linux_distro() {
         let plugin = SystemPlugin::new(&Config::default());
-        let value = plugin.collect(&mut ()).await;
+        let value = plugin.collect(&mut Clock::default()).await;
         assert!(value.as_object().unwrap().contains_key("linux_distro"));
     }
 }

@@ -13,7 +13,8 @@
 //! spike showed a shorter delay silently keeps a bogus reading.
 
 use super::load::logical_core_count;
-use super::{Plugin, PluginId, RATE_WARMUP, envelope, round1};
+use super::round1;
+use super::{Plugin, PluginId, RATE_WARMUP, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -77,7 +78,7 @@ impl Plugin for CpuPlugin {
             (Some(prev), Some(cur)) => (prev, cur),
             // /proc/stat unreadable — degrade rather than fail the cycle.
             _ => {
-                return envelope(json!({ "cpucore": self.cpucore }), Some(elapsed));
+                return envelope(json!({ "cpucore": self.cpucore }), elapsed);
             }
         };
         state.prev = Some(cur);
@@ -109,7 +110,7 @@ impl Plugin for CpuPlugin {
                 "syscalls": 0.0,
                 "cpucore": self.cpucore,
             }),
-            Some(elapsed),
+            elapsed,
         )
     }
 
@@ -132,7 +133,7 @@ impl Plugin for CpuPlugin {
                 "total": round1(f64::from(state.sys.global_cpu_usage())),
                 "cpucore": self.cpucore,
             }),
-            Some(elapsed),
+            elapsed,
         )
     }
 }

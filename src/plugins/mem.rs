@@ -7,7 +7,7 @@
 
 #[cfg(not(target_os = "linux"))]
 use super::round1;
-use super::{Plugin, PluginId, envelope};
+use super::{Clock, Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -28,9 +28,10 @@ impl MemPlugin {
 
 #[derive(Default)]
 pub struct MemState {
+    /// Tracks `time_since_update` for the v5 envelope.
+    clock: Clock,
     /// `sysinfo` handle kept across cycles on the degraded path; the Linux
-    /// path reads `/proc/meminfo` directly and needs no state. `mem` is
-    /// instantaneous, so there is no `time_since_update` clock either.
+    /// path reads `/proc/meminfo` directly and needs no state.
     #[cfg(not(target_os = "linux"))]
     sys: System,
 }
@@ -48,12 +49,13 @@ impl Plugin for MemPlugin {
     }
 
     #[cfg(target_os = "linux")]
-    async fn collect(&self, _state: &mut MemState) -> Value {
+    async fn collect(&self, state: &mut MemState) -> Value {
+        let tsu = state.clock.tick();
         let Some(m) = super::linux::read_meminfo() else {
             // /proc/meminfo unreadable — degrade to the minimal subset.
             return envelope(
                 json!({ "total": 0, "available": 0, "percent": 0.0, "used": 0, "free": 0 }),
-                None,
+                tsu,
             );
         };
         envelope(
@@ -68,12 +70,13 @@ impl Plugin for MemPlugin {
                 "buffers": m.buffers,
                 "cached": m.cached,
             }),
-            None,
+            tsu,
         )
     }
 
     #[cfg(not(target_os = "linux"))]
     async fn collect(&self, state: &mut MemState) -> Value {
+        let tsu = state.clock.tick();
         state.sys.refresh_memory();
         let total = state.sys.total_memory();
         let available = state.sys.available_memory();
@@ -91,7 +94,7 @@ impl Plugin for MemPlugin {
                 "used": state.sys.used_memory(),
                 "free": state.sys.free_memory(),
             }),
-            None,
+            tsu,
         )
     }
 }
