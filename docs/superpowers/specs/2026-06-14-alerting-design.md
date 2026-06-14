@@ -105,7 +105,10 @@ pub struct Alerts {
     inner: Mutex<AlertsInner>,   // history + state behind one lock
     hostname: String,            // sysinfo::System::host_name(), captured once
     history_size: usize,         // [alerts].history_size, default 200
-    min_duration: Duration,      // [alerts].min_duration_seconds, default 5.0
+    min_duration: HashMap<PluginId, Duration>, // per-plugin effective window
+                                 // ([plugins.<p>].min_duration_seconds ??
+                                 //  [alerts].min_duration_seconds (5.0)),
+                                 // precomputed from Config at construction
 }
 
 struct AlertsInner {
@@ -193,6 +196,10 @@ critical = 90.0      # any subset of the three keys is valid
 # Collection plugin, SPECIFIC — keyed by item primary key, then field name
 [plugins.fs.thresholds_by_item."/".percent]
 critical = 95.0      # overrides only `critical` for mount point "/"
+
+# Optional per-plugin hysteresis window — uniform across all items (§5.3)
+[plugins.fs]
+min_duration_seconds = 10.0   # overrides the global [alerts] default for fs
 ```
 
 ```rust
@@ -200,6 +207,7 @@ pub struct PluginConfig {
     // …existing fields…
     pub thresholds: HashMap<String, Thresholds>,                          // global, keyed by field
     pub thresholds_by_item: HashMap<String, HashMap<String, Thresholds>>, // item key -> field -> thresholds
+    pub min_duration_seconds: Option<f64>,                                // per-plugin override; uniform over items
 }
 pub struct Thresholds { careful: Option<f64>, warning: Option<f64>, critical: Option<f64> }
 ```
@@ -229,7 +237,8 @@ declared block **and** the merged effective set for every declared
 `(item, field)` pair — both global and `thresholds_by_item` are fully known at
 config load, so a partial override that merges into an out-of-order set fails
 closed at startup with a clear message (reuse the existing `validate()`
-pattern). `history_size ≥ 1`, `min_duration_seconds ≥ 0`.
+pattern). `history_size ≥ 1`; `min_duration_seconds ≥ 0` for both the global
+`[alerts]` value and any per-plugin `[plugins.<name>]` override.
 
 ## 5. Lazy-model decisions
 
@@ -256,9 +265,15 @@ needed), and a direct result of the lazy contract.
 
 ### 5.3 min_duration scope (v0.3.0)
 
-Global `[alerts].min_duration_seconds` only. Unlike **thresholds** (which do
-support the global + per-item two-level scheme of §4.5), the per-field /
-per-level / per-item override hierarchy of the reference for *min_duration*
+Two levels: the global default `[alerts].min_duration_seconds` (5.0) and an
+optional **per-plugin** override `[plugins.<name>].min_duration_seconds`. The
+effective `min_duration` is resolved once per plugin
+(`plugins[plugin].min_duration_seconds.unwrap_or(global)`) and applied
+**uniformly to every item** of a collection plugin — there is deliberately no
+per-item `min_duration`. Unlike **thresholds** (global + per-item, §4.5),
+`min_duration` is uniform within a plugin: all of a plugin's `(item, field)`
+hysteresis windows share the same duration. The finer per-field / per-level /
+per-item hierarchy of the reference
 (`{pk}_{field}_{level}_min_duration_seconds` …) is **deferred** (YAGNI) and
 can be layered on later without changing the journal or the envelope.
 
@@ -293,7 +308,8 @@ needed (unlike `/api/5/config`, which is why that route stays deferred).
   only `critical` and inherits `careful`/`warning` from global (per-limit
   merge); ordering validation rejects `careful > warning` both in a declared
   block and in a merged global+item effective set; `[alerts]` defaults applied
-  when absent.
+  when absent; per-plugin `min_duration_seconds` overrides the global default
+  and applies uniformly to every item of a collection plugin.
 - **Integration** (`tests/`): with thresholds configured, a breaching value
   populates `_levels` in the plugin payload and, after `min_duration`,
   produces an event at `/api/5/alert`; with no thresholds, `_levels` stays
