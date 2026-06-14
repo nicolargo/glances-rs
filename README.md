@@ -34,7 +34,7 @@ It listens on `http://127.0.0.1:61208`. From another terminal:
 ```sh
 curl http://127.0.0.1:61208/api/5/mem          # one plugin
 curl http://127.0.0.1:61208/api/5/all          # every plugin at once
-curl http://127.0.0.1:61208/api/5/pluginslist  # ["cpu","load","mem","network"]
+curl http://127.0.0.1:61208/api/5/pluginslist  # cpu, diskio, fs, load, mem, memswap, network, system, uptime
 ```
 
 The first request to a plugin wakes its collector and waits for one
