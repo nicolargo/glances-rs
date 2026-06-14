@@ -1,7 +1,7 @@
 name: Release
 
-# Pushing a version tag builds a single binary per target and attaches the
-# archives to the GitHub release for that tag.
+# Pushing a version tag creates a GitHub release, then builds a single
+# binary per target and attaches the archives to it.
 on:
   push:
     tags: ["v*"]
@@ -10,8 +10,21 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # The upload action below does not create the release itself — it expects
+  # one to exist for the tag. Create it first so the matrix jobs have a
+  # release to attach their binaries to (otherwise they loop "release not
+  # found" and fail).
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload:
     name: ${{ matrix.target }}
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
