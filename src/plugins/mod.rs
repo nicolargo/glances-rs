@@ -16,7 +16,7 @@ pub mod uptime;
 pub mod linux;
 
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Warm-up delay for rate plugins' self-bootstrap (§5.5): `sysinfo`'s
 /// minimum CPU-refresh interval (200 ms on Linux/macOS/Windows) plus a
@@ -35,39 +35,23 @@ pub(crate) fn round3(x: f64) -> f64 {
 }
 
 /// Wrap a plugin's raw stats in the Glances v5 REST envelope: a list goes
-/// under `data`, a dict keeps its fields at the top level; both gain a
-/// top-level `time_since_update` and `_levels` (empty `{}` until alerting
-/// lands in v0.3.0). Every plugin's `collect()` returns through this.
-pub(crate) fn envelope(stats: Value, time_since_update: f64) -> Value {
+/// under `data`, a dict keeps its fields at the top level. Both gain a
+/// top-level `_levels` (empty `{}` until alerting lands in v0.3.0). Every
+/// plugin's `collect()` returns through this.
+///
+/// `time_since_update` is intentionally NOT injected here. Glances emits it
+/// only on the rate plugins — `cpu` (top level) and `network`/`diskio` (one
+/// per item) — so those add it themselves before wrapping; the instantaneous
+/// plugins omit it entirely (see docs/api.md §4).
+pub(crate) fn envelope(stats: Value) -> Value {
     let mut out = match stats {
         Value::Array(items) => json!({ "data": items }),
         other => other,
     };
     if let Some(map) = out.as_object_mut() {
-        map.insert("time_since_update".into(), json!(round3(time_since_update)));
         map.insert("_levels".into(), json!({}));
     }
     out
-}
-
-/// Inter-cycle stopwatch for `time_since_update`. Instantaneous plugins keep
-/// one to report the elapsed seconds since their previous cycle; rate plugins
-/// already measure their own interval and don't need it.
-#[derive(Default)]
-pub struct Clock {
-    last: Option<Instant>,
-}
-
-impl Clock {
-    /// Seconds since the previous tick (`0.0` on the first), advancing it.
-    pub fn tick(&mut self) -> f64 {
-        let now = Instant::now();
-        let dt = self
-            .last
-            .map_or(0.0, |l| now.duration_since(l).as_secs_f64());
-        self.last = Some(now);
-        dt
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

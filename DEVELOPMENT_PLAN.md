@@ -359,10 +359,9 @@ A review against a live Glances v5 (`develop-v5`) server showed the payloads
 followed the **v4** conventions, not v5. Corrected across every plugin
 (`docs/api.md` §4 rewritten):
 
-- [x] **Response envelope** — shared `plugins::envelope()`: object plugins gain
-      top-level `time_since_update` + `_levels` (`{}` until alerting); collection
-      plugins nest their array under `data`. `plugins::Clock` gives instantaneous
-      plugins a `time_since_update`.
+- [x] **Response envelope** — shared `plugins::envelope()`: object plugins keep
+      their fields at the top level, collection plugins nest their array under
+      `data`, and both gain `_levels` (`{}` until alerting).
 - [x] **Plain per-second rates** — dropped the v4 `X`/`X_gauge`/`X_rate_per_sec`
       triple; a rate field is now a single per-second value (network `bytes_*`,
       diskio `read_*`/`write_*`, cpu `ctx_switches`/…). **memswap `sin`/`sout`
@@ -374,6 +373,21 @@ followed the **v4** conventions, not v5. Corrected across every plugin
       `loop.*,/dev/loop.*`.
 - [x] **Conditional `alias`** on collection items — present only when configured
       for that item (was always `null`).
+
+### Phase 8.2 — `time_since_update` scope (match `develop-v5`)
+
+The envelope had been adding `time_since_update` to *every* plugin. The live
+Glances `develop-v5` server emits it only on the plugins that derive a rate
+(its `_manage_rate` decorator), so the scope was tightened to match:
+
+- [x] **Rate plugins only** — `cpu` carries it at the top level; `network` and
+      `diskio` carry it **per item** under `data` (no top-level one). The
+      instantaneous plugins (`mem`, `load`, `system`, `uptime`, `fs`) and
+      `memswap` no longer emit it.
+- [x] **Dropped `plugins::Clock`** — it existed only to give instantaneous
+      plugins a `time_since_update`; with that gone, `load`/`system` revert to
+      `State = ()` and the rest drop their clock field (one less allocation per
+      cycle, in keeping with the footprint goal).
 
 ---
 

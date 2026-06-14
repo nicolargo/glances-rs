@@ -3,7 +3,7 @@
 //! On Windows `sysinfo` emulates the load average through PDH counters and
 //! may legitimately report zeros: degraded values, identical shape.
 
-use super::{Clock, Plugin, PluginId, envelope};
+use super::{Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -31,7 +31,8 @@ pub(crate) fn logical_core_count() -> usize {
 
 #[async_trait::async_trait]
 impl Plugin for LoadPlugin {
-    type State = Clock;
+    // Instantaneous: no inter-cycle state, no time_since_update.
+    type State = ();
 
     fn id(&self) -> PluginId {
         PluginId::Load
@@ -41,17 +42,14 @@ impl Plugin for LoadPlugin {
         self.refresh
     }
 
-    async fn collect(&self, clock: &mut Clock) -> Value {
+    async fn collect(&self, _state: &mut ()) -> Value {
         let load = System::load_average();
-        envelope(
-            json!({
-                "min1": load.one,
-                "min5": load.five,
-                "min15": load.fifteen,
-                "cpucore": self.cpucore,
-            }),
-            clock.tick(),
-        )
+        envelope(json!({
+            "min1": load.one,
+            "min5": load.five,
+            "min15": load.fifteen,
+            "cpucore": self.cpucore,
+        }))
     }
 }
 
@@ -62,14 +60,15 @@ mod tests {
     #[tokio::test]
     async fn collect_matches_the_frozen_schema() {
         let plugin = LoadPlugin::new(&Config::default());
-        let value = plugin.collect(&mut Clock::default()).await;
+        let value = plugin.collect(&mut ()).await;
 
         let obj = value.as_object().expect("load payload is an object");
         for field in ["min1", "min5", "min15", "cpucore"] {
             assert!(obj.contains_key(field), "missing field {field}");
         }
-        // The v5 envelope adds these to every plugin.
-        assert!(obj.contains_key("time_since_update"));
+        // load is instantaneous: _levels on the envelope, but no
+        // time_since_update (a rate-plugin field).
+        assert!(obj.get("time_since_update").is_none());
         assert_eq!(obj["_levels"], json!({}));
         assert!(obj["cpucore"].as_u64().unwrap() > 0);
         // Degraded platforms report 0.0, never a negative or missing value.

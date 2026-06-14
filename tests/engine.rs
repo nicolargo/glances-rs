@@ -210,17 +210,18 @@ async fn cold_network_carries_rates_for_existing_interfaces() {
     let (router, _) = make_app("[plugins.network]\nhide = [\"docker.*\"]");
     let (status, value) = get(&router, "/api/5/network").await;
     assert_eq!(status, StatusCode::OK);
-    // The v5 envelope: one top-level time_since_update, items under data.
-    assert!(value["time_since_update"].is_number());
+    // The v5 envelope: items under data, _levels on the envelope. As a rate
+    // plugin, network carries time_since_update per item, not at the top level.
+    assert!(value.get("time_since_update").is_none());
     let items = value["data"].as_array().unwrap();
     assert!(!items.is_empty(), "expected at least one interface");
     for item in items {
         for field in ["interface_name", "bytes_recv", "bytes_sent", "bytes_all"] {
             assert!(!item[field].is_null(), "missing field {field}: {item}");
         }
-        // v5: plain per-second rates, no gauge / rate_per_sec / per-item tsu.
+        // v5: plain per-second rates (no gauge / rate_per_sec), per-item tsu.
         assert!(item.get("bytes_recv_gauge").is_none());
-        assert!(item.get("time_since_update").is_none());
+        assert!(item["time_since_update"].is_number());
     }
 }
 

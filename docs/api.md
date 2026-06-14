@@ -58,43 +58,52 @@ query `/api/5/{plugin}` and rely on `503`.
 
 ## 4. Response envelope and rate convention (Glances v5)
 
-**Every** plugin response is wrapped in the v5 envelope, which adds two
-top-level keys to the plugin's stats:
-
-- `time_since_update` — measured seconds (float) since the plugin's previous
-  cycle (real `Instant` elapsed, never the nominal refresh — ARCHITECTURE.md
-  §5.4); `0.0` on the very first cycle of an instantaneous plugin.
-- `_levels` — alert-threshold metadata, **always `{}`** until alerting
-  (v0.3.0).
-
-The wrapping depends on the plugin's stat type:
+Every plugin response is wrapped in the v5 envelope. The wrapping depends on
+the plugin's stat type:
 
 - **Object plugins** (`mem`, `cpu`, `load`, `system`, `uptime`, `memswap`) —
-  the stat fields sit at the **top level**, next to `time_since_update` and
-  `_levels`:
+  the stat fields sit at the **top level**, next to `_levels`:
   ```json
-  { "seconds": 71988, "time_since_update": 2.004, "_levels": {} }
+  { "seconds": 71988, "_levels": {} }
   ```
 - **Collection plugins** (`network`, `fs`, `diskio`) — the per-item array is
-  placed under a **`data`** key:
+  placed under a **`data`** key, with `_levels` alongside it:
   ```json
-  { "data": [ { … }, { … } ], "time_since_update": 2.004, "_levels": {} }
+  { "data": [ { … }, { … } ], "_levels": {} }
   ```
+
+`_levels` is alert-threshold metadata, present on every plugin but **always
+`{}`** until alerting lands (v0.3.0).
+
+**`time_since_update` is a rate-plugin field, not an envelope field.** Glances
+only emits it on the plugins that derive a rate (matching its `_manage_rate`
+decorator), and never on the instantaneous ones:
+
+- `cpu` — at the **top level** (object plugin).
+- `network`, `diskio` — inside **each item** under `data` (one measured
+  interval per item; collection plugins have no top-level `time_since_update`).
+- `mem`, `load`, `system`, `uptime`, `fs`, `memswap` — **absent** (`fs` and the
+  rest are instantaneous; `memswap`'s `sin`/`sout` are rates but Glances does
+  not surface a `time_since_update` for it).
+
+The value is the measured seconds (float) since the plugin's previous cycle
+(real `Instant` elapsed, never the nominal refresh — ARCHITECTURE.md §5.4).
 
 **Rate fields are plain per-second rates.** A cumulative-counter field `X`
 marked *rate* (network `bytes_*`, diskio `read_*`/`write_*`, memswap
 `sin`/`sout`, cpu `ctx_switches`/`interrupts`/`soft_interrupts`) is reported as
-a single value — the counter delta divided by `time_since_update`, to 1
+a single value — the counter delta divided by the measured interval, to 1
 decimal. There is **no** `X_gauge` or `X_rate_per_sec` companion (that was the
-v4 shape); the per-item objects of a collection plugin carry no
-`time_since_update` either — it lives once at the envelope top level.
+v4 shape).
 
 ## 5. Payload schemas
 
 > Each example shows the plugin's **stats**; per §4 every response is wrapped
-> in the envelope — object plugins gain top-level `time_since_update` and
-> `_levels`, collection plugins are nested under `data`. Only the envelope is
-> shown explicitly where it matters (the collection plugins and `uptime`).
+> in the envelope — object plugins keep their fields at the top level,
+> collection plugins are nested under `data`, and both gain `_levels`.
+> `time_since_update` appears only on the rate plugins (`cpu` top-level;
+> `network`/`diskio` per item). The envelope is shown explicitly where it
+> matters (the collection plugins and `uptime`).
 
 ### 5.1 `mem` — object, instantaneous
 
@@ -180,21 +189,23 @@ One element per interface; primary key `interface_name`:
 {
   "data": [
     {
-      "interface_name": "eth0",
-      "bytes_recv":     511.2,
-      "bytes_sent":     1022.4,
-      "bytes_all":      1533.6,
-      "speed":          0,
-      "is_up":          true
+      "interface_name":    "eth0",
+      "bytes_recv":        511.2,
+      "bytes_sent":        1022.4,
+      "bytes_all":         1533.6,
+      "speed":             0,
+      "is_up":             true,
+      "time_since_update": 2.004
     }
   ],
-  "time_since_update": 2.004,
   "_levels": {}
 }
 ```
 
 - `bytes_recv`/`bytes_sent`/`bytes_all` are **per-second rates** (bytes/s, 1
   decimal). No `_gauge`/`_rate_per_sec` companions.
+- `time_since_update` is **per item** (the measured interval used for that
+  interface's rates); there is no top-level `time_since_update`.
 - Interfaces filtered by the configured `show`/`hide` regexes on
   `interface_name`, applied before rate computation. **Default hide:**
   `docker.*` and `lo` (set an explicit `hide` in config to override).
@@ -236,14 +247,13 @@ One element per interface; primary key `interface_name`:
 ```json
 {
   "seconds": 71988,
-  "time_since_update": 2.004,
   "_levels": {}
 }
 ```
 
-- A single `seconds` field (integer seconds since boot) plus the envelope —
-  the Glances v5 REST shape. (The v4 shape was a bare `str(timedelta)` string;
-  v5 serializes the integer.)
+- A single `seconds` field (integer seconds since boot) plus `_levels` —
+  the Glances v5 REST shape. No `time_since_update` (uptime is instantaneous).
+  (The v4 shape was a bare `str(timedelta)` string; v5 serializes the integer.)
 - Same on every platform (`sysinfo::System::uptime`).
 
 ### 5.7 `memswap` — object, part-rate
@@ -255,16 +265,16 @@ One element per interface; primary key `interface_name`:
   "free":              3221225472,
   "percent":           25.0,
   "sin":               2048.0,
-  "sout":              512.0,
-  "time_since_update": 2.004
+  "sout":              512.0
 }
 ```
 
 - `total`/`used`/`free` in bytes; `percent = used / total * 100`
   (`used = total - free`), `0.0` when there is no swap.
 - `sin`/`sout` are **per-second rates** (bytes/s, 1 decimal): the cumulative
-  `/proc/vmstat` page-swap counters diffed over `time_since_update` (§4). `0.0`
-  on the first cycle (the warm-up baseline).
+  `/proc/vmstat` page-swap counters diffed over the measured interval (§4).
+  `0.0` on the first cycle (the warm-up baseline). Unlike `cpu`, `memswap`
+  carries **no** `time_since_update` — Glances does not surface one here.
 - **Linux** (`/proc/meminfo` + `/proc/vmstat`): full field set; `sin`/`sout`
   use the kernel page size (`sysconf(_SC_PAGESIZE)`). **macOS/Windows:**
   degrade to `total`/`used`/`free`/`percent`; `sin`/`sout` are omitted
@@ -287,11 +297,11 @@ One element per mounted filesystem; primary key `mnt_point`:
       "percent":     88.7
     }
   ],
-  "time_since_update": 2.004,
   "_levels": {}
 }
 ```
 
+- No `time_since_update`: `fs` is instantaneous (no rate).
 - All sizes in bytes; `free` is the space available to the caller,
   `used = size - free`, `percent = used / size * 100` (1 decimal). This
   slightly overstates usage versus psutil's root-reserve-aware percent (which
@@ -312,23 +322,25 @@ One element per disk; primary key `disk_name`:
 {
   "data": [
     {
-      "disk_name":   "sda",
-      "read_count":  6.0,
-      "write_count": 20.0,
-      "read_bytes":  24576.0,
-      "write_bytes": 81920.0
+      "disk_name":         "sda",
+      "read_count":        6.0,
+      "write_count":       20.0,
+      "read_bytes":        24576.0,
+      "write_bytes":       81920.0,
+      "time_since_update": 2.004
     }
   ],
-  "time_since_update": 2.004,
   "_levels": {}
 }
 ```
 
 - `read_count`/`write_count`/`read_bytes`/`write_bytes` are **per-second
   rates** (1 decimal), diffed from the cumulative `/proc/diskstats` counters
-  over `time_since_update` (§4). `*_bytes` derive from sectors × 512. A disk
+  over the measured interval. `*_bytes` derive from sectors × 512. A disk
   absent from the previous sample is skipped for one cycle; a removed disk
   drops out immediately (§8.1).
+- `time_since_update` is **per item** (like `network`); there is no top-level
+  `time_since_update`.
 - Disks are filtered by the configured `show`/`hide` regexes on `disk_name`.
   **Default hide:** `loop.*` and `/dev/loop.*`. `alias` from
   `[plugins.diskio].alias` is added **only when configured**.

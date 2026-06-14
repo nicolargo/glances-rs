@@ -13,8 +13,7 @@
 //! spike showed a shorter delay silently keeps a bogus reading.
 
 use super::load::logical_core_count;
-use super::round1;
-use super::{Plugin, PluginId, RATE_WARMUP, envelope};
+use super::{Plugin, PluginId, RATE_WARMUP, envelope, round1, round3};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -78,7 +77,10 @@ impl Plugin for CpuPlugin {
             (Some(prev), Some(cur)) => (prev, cur),
             // /proc/stat unreadable — degrade rather than fail the cycle.
             _ => {
-                return envelope(json!({ "cpucore": self.cpucore }), elapsed);
+                return envelope(json!({
+                    "cpucore": self.cpucore,
+                    "time_since_update": round3(elapsed),
+                }));
             }
         };
         state.prev = Some(cur);
@@ -92,26 +94,24 @@ impl Plugin for CpuPlugin {
                 0.0
             }
         };
-        envelope(
-            json!({
-                "total": p.total,
-                "user": p.user,
-                "system": p.system,
-                "idle": p.idle,
-                "nice": p.nice,
-                "iowait": p.iowait,
-                "irq": p.irq,
-                "steal": p.steal,
-                "guest": p.guest,
-                "ctx_switches": rate(cur.ctxt.saturating_sub(prev.ctxt)),
-                "interrupts": rate(cur.intr.saturating_sub(prev.intr)),
-                "soft_interrupts": rate(cur.softirq_total.saturating_sub(prev.softirq_total)),
-                // psutil reports 0 syscalls on Linux; mirror that.
-                "syscalls": 0.0,
-                "cpucore": self.cpucore,
-            }),
-            elapsed,
-        )
+        envelope(json!({
+            "total": p.total,
+            "user": p.user,
+            "system": p.system,
+            "idle": p.idle,
+            "nice": p.nice,
+            "iowait": p.iowait,
+            "irq": p.irq,
+            "steal": p.steal,
+            "guest": p.guest,
+            "ctx_switches": rate(cur.ctxt.saturating_sub(prev.ctxt)),
+            "interrupts": rate(cur.intr.saturating_sub(prev.intr)),
+            "soft_interrupts": rate(cur.softirq_total.saturating_sub(prev.softirq_total)),
+            // psutil reports 0 syscalls on Linux; mirror that.
+            "syscalls": 0.0,
+            "cpucore": self.cpucore,
+            "time_since_update": round3(elapsed),
+        }))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -128,13 +128,11 @@ impl Plugin for CpuPlugin {
             .as_secs_f64();
         state.last = Some(now);
 
-        envelope(
-            json!({
-                "total": round1(f64::from(state.sys.global_cpu_usage())),
-                "cpucore": self.cpucore,
-            }),
-            elapsed,
-        )
+        envelope(json!({
+            "total": round1(f64::from(state.sys.global_cpu_usage())),
+            "cpucore": self.cpucore,
+            "time_since_update": round3(elapsed),
+        }))
     }
 }
 
