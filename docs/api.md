@@ -13,7 +13,7 @@
 |--------------------------|--------|-----------------------------------------|--------------|
 | `/api/5/{plugin}`        | GET    | The plugin's payload (object or array)  | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <payload>, … }`  | `200` (possibly partial — see §3) |
-| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","fs","load","mem","memswap","network","system","uptime"]` | `200` |
+| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
@@ -278,6 +278,45 @@ One element per mounted filesystem; primary key `mnt_point`:
 - **Omitted vs. Glances:** `key` (the primary-key name, dropped for every
   collection plugin here — see `network`) and `options` (mount flags;
   `sysinfo` does not expose them). Same payload on every platform.
+
+### 5.9 `diskio` — **array** of objects (collection plugin), rate
+
+One element per disk; primary key `disk_name`:
+
+```json
+[
+  {
+    "disk_name":                "sda",
+    "read_count":               12,
+    "read_count_gauge":         158034,
+    "read_count_rate_per_sec":  6.0,
+    "write_count":              40,
+    "write_count_gauge":        982310,
+    "write_count_rate_per_sec": 20.0,
+    "read_bytes":               49152,
+    "read_bytes_gauge":         6314147840,
+    "read_bytes_rate_per_sec":  24576.0,
+    "write_bytes":              163840,
+    "write_bytes_gauge":        21459738624,
+    "write_bytes_rate_per_sec": 81920.0,
+    "alias":                    null,
+    "time_since_update":        2.004
+  }
+]
+```
+
+- Per the §4 rate convention, each of `read_count`/`write_count`/`read_bytes`/
+  `write_bytes` carries a delta, a `_gauge` (raw cumulative counter) and a
+  `_rate_per_sec`. `*_bytes` are sectors × 512 (the `/proc/diskstats`
+  convention). A disk absent from the previous sample is skipped for one cycle;
+  a removed disk drops out immediately (§8.1).
+- Disks are filtered by the configured `show`/`hide` regexes on `disk_name`
+  (no filtering by default, so virtual devices like `loop*`/`ram*` appear —
+  hide them via config). `alias` from `[plugins.diskio].alias` keyed by disk
+  name (`null` when unset).
+- **Linux only** (`/proc/diskstats`). `sysinfo` exposes no per-disk I/O, so
+  **macOS/Windows return an empty array**. `read_time`/`write_time` and the
+  derived latency fields (present in Glances) are omitted.
 
 ---
 

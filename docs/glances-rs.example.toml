@@ -36,8 +36,8 @@ idle_cycles = 5
 # How long a waking request waits for the first cycle before answering 503.
 guard_timeout = 5.0
 
-# Per-plugin sections (cpu, fs, load, mem, memswap, network, system, uptime)
-# — all optional.
+# Per-plugin sections (cpu, diskio, fs, load, mem, memswap, network, system,
+# uptime) — all optional.
 # [plugins.cpu]
 # refresh = 1.0
 #
@@ -50,3 +50,13 @@ guard_timeout = 5.0
 # Per-interface display alias (surfaced verbatim in the `alias` field):
 # [plugins.network.alias]
 # eth0 = "LAN"
+#
+# The collection plugins fs and diskio share the same show/hide/alias keys,
+# matching on the mount point and the disk name respectively. diskio shows
+# every device by default, so hide the virtual ones if you don't want them:
+# [plugins.diskio]
+# hide = ["^loop", "^ram"]
+#
+# [plugins.fs]
+# Keep only real mounts (example):
+# hide = ["^/snap", "^/boot/efi$"]

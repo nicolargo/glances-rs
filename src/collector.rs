@@ -14,6 +14,7 @@
 //! request spawns a fresh collector.
 
 use crate::plugins::cpu::CpuPlugin;
+use crate::plugins::diskio::DiskioPlugin;
 use crate::plugins::fs::FsPlugin;
 use crate::plugins::load::LoadPlugin;
 use crate::plugins::mem::MemPlugin;
@@ -90,6 +91,9 @@ fn spawn_plugin(app: &Arc<AppState>, id: PluginId, ready: watch::Sender<bool>) {
     match id {
         PluginId::Cpu => {
             tokio::spawn(plugin_loop(CpuPlugin::new(&app.config), app, ready));
+        }
+        PluginId::Diskio => {
+            tokio::spawn(plugin_loop(DiskioPlugin::new(&app.config), app, ready));
         }
         PluginId::Fs => {
             tokio::spawn(plugin_loop(FsPlugin::new(&app.config), app, ready));

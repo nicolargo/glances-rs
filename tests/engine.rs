@@ -293,7 +293,7 @@ async fn disabled_plugin_is_404_and_absent_from_pluginslist() {
     assert_eq!(
         value,
         serde_json::json!([
-            "cpu", "fs", "load", "memswap", "network", "system", "uptime"
+            "cpu", "diskio", "fs", "load", "memswap", "network", "system", "uptime"
         ])
     );
 }
@@ -306,7 +306,7 @@ async fn pluginslist_lists_enabled_plugins() {
     assert_eq!(
         value,
         serde_json::json!([
-            "cpu", "fs", "load", "mem", "memswap", "network", "system", "uptime"
+            "cpu", "diskio", "fs", "load", "mem", "memswap", "network", "system", "uptime"
         ])
     );
     // pluginslist is names-only: it must not wake anything.

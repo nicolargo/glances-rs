@@ -332,13 +332,15 @@ re-listed per plugin:
       and `diskio` next). No inter-cycle state ⇒ no leak risk. `percent =
       used/size` (a slight approximation of psutil's root-reserve-aware
       percent); `key` and `options` omitted vs. Glances (docs/api.md §5.8).
-- [ ] **`diskio`** — **collection + rate**, the hardest, lands last. One item
+- [x] **`diskio`** — **collection + rate**, the hardest, landed last. One item
       per disk (`/proc/diskstats`), cumulative `read`/`write` bytes & counts →
-      rates. Combines **all** the traps: §5.4 (`saturating_sub`, skip a disk
-      absent from the previous sample via `?`, measured `Instant`), §5.5
-      (warm-up), and the §8.1 anti-leak rule — **`state.previous` stores only
-      the current sample, never a merge**, with the mandated code comment, so
-      removed/hot-unplugged disks don't accumulate forever.
+      rates, reusing `network`'s `step` shape and `KeyFilter`. Combines all the
+      traps: §5.4 (`saturating_sub`, skip a disk absent from the previous
+      sample via `?`, measured `Instant`), §5.5 (warm-up), and the §8.1
+      anti-leak rule (`state.previous` = current sample only, with the comment).
+      **Linux-only** — `sysinfo` has no per-disk I/O, so other platforms return
+      an empty array; `read_time`/`write_time`/latency omitted (docs/api.md
+      §5.9).
 
 **Tests:** per plugin — Linux parsers against captured samples; rate plugins
 (`memswap`, `diskio`) fed two synthetic samples (nominal rate, counter

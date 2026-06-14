@@ -294,6 +294,43 @@ pub fn parse_swap(meminfo: &str, vmstat: &str, page_size: u64) -> SwapInfo {
 }
 
 // ---------------------------------------------------------------------------
+// /proc/diskstats — per-disk I/O counters
+// ---------------------------------------------------------------------------
+
+/// Cumulative `(read_count, write_count, read_bytes, write_bytes)` for one
+/// disk. `*_bytes` are sectors × 512 (the fixed `/proc/diskstats` sector
+/// size, as psutil uses), independent of the device's physical sector size.
+pub type DiskIoCounters = (u64, u64, u64, u64);
+
+pub fn read_diskstats() -> Option<std::collections::HashMap<String, DiskIoCounters>> {
+    std::fs::read_to_string("/proc/diskstats")
+        .ok()
+        .map(|s| parse_diskstats(&s))
+}
+
+pub fn parse_diskstats(content: &str) -> HashMap<String, DiskIoCounters> {
+    let mut map = HashMap::new();
+    for line in content.lines() {
+        // major minor name reads merged sectors_read ms_read writes merged
+        // sectors_written ms_write ... (≥ 14 base fields).
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 14 {
+            continue;
+        }
+        let num = |i: usize| f[i].parse::<u64>().unwrap_or(0);
+        let read_count = num(3);
+        let read_bytes = num(5).saturating_mul(512);
+        let write_count = num(7);
+        let write_bytes = num(9).saturating_mul(512);
+        map.insert(
+            f[2].to_string(),
+            (read_count, write_count, read_bytes, write_bytes),
+        );
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
 // /etc/os-release — Linux distribution
 // ---------------------------------------------------------------------------
 
@@ -409,6 +446,25 @@ Inactive:        150 kB
     fn parse_meminfo_falls_back_to_free_without_memavailable() {
         let m = parse_meminfo("MemTotal: 1000 kB\nMemFree: 400 kB\n");
         assert_eq!(m.available, 400 * 1024);
+    }
+
+    #[test]
+    fn parse_diskstats_reads_counts_and_sector_bytes() {
+        // Real-shaped lines: sda has 14 base fields, loop0 too.
+        let content = "\
+   8       0 sda 1000 50 4000 120 2000 30 8000 200 0 300 420
+ 259       0 nvme0n1 5 0 40 1 7 0 80 2 0 3 6
+";
+        let m = parse_diskstats(content);
+        let sda = m.get("sda").unwrap();
+        // read_count, write_count, read_bytes (4000*512), write_bytes (8000*512)
+        assert_eq!(*sda, (1000, 2000, 4000 * 512, 8000 * 512));
+        assert!(m.contains_key("nvme0n1"));
+    }
+
+    #[test]
+    fn parse_diskstats_skips_short_lines() {
+        assert!(parse_diskstats("8 0 sda 1 2 3\n").is_empty());
     }
 
     #[test]
