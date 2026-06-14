@@ -270,13 +270,17 @@ this with a small **static per-plugin table** — the alertable allow-list — t
 the `observe` step consults:
 
 ```rust
+enum Direction { High, Low }            // alert on high vs. low values
+
 struct AlertField {
     field: &'static str,         // e.g. "percent", "bytes_recv"
     prominent: bool,             // replicated from Glances (mem.percent=true,
                                  //   fs.percent=false, network.*=false, …)
+    direction: Direction,        // watch_direction; "high" for every v0.3.0
+                                 //   field (verified across the 9 v5 schemas),
+                                 //   but the engine handles both (§5.1)
     normalize_by: Option<&'static str>, // divisor field, or None for direct compare
 }
-// watch_direction is "high" for every v0.3.0 field — not represented yet (§10).
 fn alert_fields(id: PluginId) -> &'static [AlertField];
 ```
 
@@ -309,13 +313,17 @@ unlike the direct percentage thresholds of `mem`/`fs`.
 
 `level(value)` = highest breached limit among the **effective** subset for
 that `(item, field)` (resolved per §4.5: item-specific over global, per-limit),
-`critical` > `warning` > `careful`, else `ok`, with `watch_direction = "high"`
-(the only direction in v0.3.0 — every alertable field alerts on high values).
-The compared quantity is the field value directly for most fields, or
-`value / divisor` when the field declares `normalize_by` (§4.6); a missing or
-zero divisor **skips** the field (no entry). Direct fields are already the
-percentages/counters Glances compares; normalized fields compare a ratio in
-`[0, 1]` against ratio thresholds.
+following `watch_direction`. **High** (`value ≥ careful → careful`, `≥ warning
+→ warning`, `≥ critical → critical`, else `ok`) and **Low** (the mirror:
+`value ≤ careful → careful`, … `≤ critical → critical`, else `ok`) are both
+implemented in `compute_level(value, thresholds, direction)`. Every v0.3.0
+alertable field is `High` (verified across the nine v5 schemas — none is `Low`);
+the `Low` path is exercised by unit tests so the per-field contract is complete
+and correct the day a low-direction field is added. The compared quantity is
+the field value directly for most fields, or `value / divisor` when the field
+declares `normalize_by` (§4.6); a missing or zero divisor **skips** the field
+(no entry). Direct fields are already the percentages/counters Glances compares;
+normalized fields compare a ratio in `[0, 1]` against ratio thresholds.
 
 **Raw level vs. debounced events.** This is the value written into `_levels`
 — the **raw, instantaneous** level, recomputed every cycle. The `min_duration`
@@ -373,8 +381,10 @@ needed (unlike `/api/5/config`, which is why that route stays deferred).
 
 ## 8. Tests
 
-- **`alerts.rs` unit tests**: level computation per limit subset and
-  `watch_direction = high`; `normalize_by` transform (`value / divisor`) and
+- **`alerts.rs` unit tests**: level computation per limit subset, for **both**
+  `Direction::High` and `Direction::Low` (the `Low` mirror: low value →
+  breach), even though no v0.3.0 field is `Low`; `normalize_by` transform
+  (`value / divisor`) and
   **skip** when the divisor is absent / `0` / non-finite; only alertable
   (`watched`) fields emit `_levels`, each with its static `prominent` flag
   (`mem.percent` true, `fs.percent` false); `_reconcile` hysteresis (no commit
@@ -415,11 +425,11 @@ config). Measure and record that delta separately; it should be a single small
 
 Per-field/per-level/per-item `min_duration` overrides; built-in
 `default_thresholds` (config-only — the §1 conservatism divergence);
-`watch_direction = "low"` and categorical (set-membership) thresholds — every
-v0.3.0 alertable field is numeric, direction `high`; operator-configurable
-`prominent` (the flag is static per field, copied from Glances — not a config
-key); `/api/5/<plugin>/info`, `sensors`, `/api/5/config`, JWT/Bearer, in-binary
-TLS.
+categorical (set-membership) thresholds — every v0.3.0 alertable field is
+numeric (`watch_direction` itself **is** implemented, §5.1, with no `Low` field
+yet); operator-configurable `prominent` (the flag is static per field, copied
+from Glances — not a config key); `/api/5/<plugin>/info`, `sensors`,
+`/api/5/config`, JWT/Bearer, in-binary TLS.
 
 ## 11. Authoritative-doc updates this entails
 
