@@ -149,22 +149,41 @@ public view returned by `/api/5/alert` (never a raw internal struct — §7).
 
 ### 4.3 `_levels` in the envelope
 
-- **Scalar plugins** (`cpu`, `mem`, `load`, `system`, `uptime`, `memswap`):
-  top-level `_levels: { <field>: { "level": "<level>" } }` for every field
-  that has a configured threshold, including the `ok` level (the level is
-  always emitted once a threshold exists, so a client sees the field return to
-  `ok`). Fields with no configured threshold are absent from `_levels`. Frozen
-  field-for-field in `docs/api.md` §4 against develop-v5 during implementation.
-- **Collection plugins** (`network`, `fs`, `diskio`): per-item `_levels`
-  carried inside each `data` item — `{ …item fields…, "_levels": { <field>:
-  { "level": … } } }`. This matches the §8.1 "per-item alert levels" wording
-  and the per-`(plugin, key, field)` keying of the reference. The envelope
-  top-level `_levels` stays `{}` for collection plugins. The exact placement
-  is confirmed against a live develop-v5 server and frozen in `docs/api.md`
-  §5 before code lands.
+**`_levels` is always top-level in the envelope** (never inside `data` items).
+Verified against `alerts_v5.py::_observations` on develop-v5, which reads
+`payload["_levels"]`: scalar and collection plugins differ only in the nesting
+depth. Each leaf entry is `{ "level": <str> }`; `prominent` is optional and
+defaults to `true` when absent — glances-rs **omits** it (no prominence config
+in v0.3.0, §10).
 
-`envelope()` keeps its current shape; the loop's `observe` step overwrites the
-`_levels` placeholder it produced.
+- **Scalar plugins** (`cpu`, `mem`, `load`, `system`, `uptime`, `memswap`):
+  keyed by field name —
+  ```json
+  "_levels": { "percent": { "level": "careful" } }
+  ```
+  Emitted for every field that has a configured threshold, including the `ok`
+  level (so a client sees the field return to `ok`). Fields with no configured
+  threshold are absent from `_levels`.
+- **Collection plugins** (`network`, `fs`, `diskio`): keyed by the
+  **stringified primary-key value**, then field name —
+  ```json
+  "_levels": {
+    "/":     { "percent": { "level": "critical" } },
+    "/home": { "percent": { "level": "ok" } }
+  }
+  ```
+  i.e. `_levels[str(pk_value)][field] = { "level": <str> }`. `_observations`
+  joins these back to `payload["data"]` items via `plugin._primary_key` — in
+  glances-rs the pk field is `PluginId::key_field()` (§4.1). Only items present
+  in the current sample, and only fields with a configured threshold (global or
+  per-item, §4.5), appear.
+
+`envelope()` produces the `_levels: {}` placeholder as today; the loop's
+`observe` step rebuilds it **fresh from the current sample each cycle** and
+overwrites it before publication — so `_levels` itself can never leak stale
+items (the §6 pruning concern is only the internal hysteresis `state` map).
+The shape is frozen field-for-field in `docs/api.md` §4/§5 during
+implementation.
 
 ### 4.4 Route `/api/5/alert`
 
@@ -249,6 +268,14 @@ that `(item, field)` (resolved per §4.5: item-specific over global, per-limit),
 `critical` > `warning` > `careful`, else `ok`. Compared directly to the field
 value (glances-rs fields are already the percentages/counters Glances compares;
 no percent-of-max indirection in v0.3.0).
+
+**Raw level vs. debounced events.** This is the value written into `_levels`
+— the **raw, instantaneous** level, recomputed every cycle. The `min_duration`
+hysteresis (§5.2) gates **only the event journal** (`/api/5/alert`), never
+`_levels`. This matches Glances: `_observations` reads `_levels` raw, and
+`_reconcile` debounces the transitions that become history events. So a brief
+spike shows immediately in `_levels` but only produces an `/alert` event if it
+persists past `min_duration`.
 
 ### 5.2 Idle-gap rule (deliberate divergence, documented §6.2)
 
@@ -337,8 +364,8 @@ thresholds; `prominent`/visibility config
 - `ARCHITECTURE.md`: new §on the `Alerts` component (alongside §5.1 state
   primitives); resolve the §8.1 "when alerting is added later" note; record
   the idle-gap divergence.
-- `docs/api.md`: `/api/5/alert` route + payload; `_levels` shape (scalar
-  top-level vs collection per-item) frozen against develop-v5; the §6.2-style
-  lazy divergence note.
+- `docs/api.md`: `/api/5/alert` route + payload; `_levels` shape (top-level
+  for both; scalar keyed by field, collection keyed by `str(pk)` then field —
+  §4.3) frozen against develop-v5; the §6.2-style lazy divergence note.
 - `DEVELOPMENT_PLAN.md`: open the v0.3.0 phase; move alerting out of
   "deferred".
