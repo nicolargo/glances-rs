@@ -1,6 +1,6 @@
 [package]
 name = "glances-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94"
 description = "Lightweight monitoring server with a Glances-compatible REST API and a minimal CPU/RAM footprint"
@@ -16,7 +16,7 @@ regex-lite = "0.1.9"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sysinfo = "0.38.4"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tokio = { version = "1.52.3", features = ["rt", "macros", "sync", "time", "signal"] }
 toml = "1.1.2"
 tower-http = { version = "0.6.11", features = ["cors"] }
 tracing = "0.1.44"

@@ -14,8 +14,9 @@
 #   ./target/release/glances-rs &
 #   scripts/footprint.sh "$(pgrep -n glances-rs)" http://127.0.0.1:61208/api/5/all
 #
-# Example — Glances scoped to the same four plugins:
-#   glances --disable-plugins all --enable-plugins cpu,load,mem,network \
+# Example — Glances scoped to the same nine plugins:
+#   glances --disable-plugins all \
+#           --enable-plugins cpu,load,mem,network,system,uptime,memswap,fs,diskio \
 #           --disable-history --disable-webui -w &
 #   scripts/footprint.sh "$(pgrep -f glances)" http://127.0.0.1:61208/api/4/all
 #

@@ -189,7 +189,7 @@ loopback and reachable only through the proxy.
 
 The whole reason glances-rs exists is to serve the same API with a far
 smaller footprint than the Python original. Measured **on the same machine,
-with the same four plugins**, using
+with the same nine plugins**, using
 [`scripts/footprint.sh`](scripts/footprint.sh) — a `/proc`-based sampler of
 resident memory and CPU under a rate-controlled polling load on
 `/…/all` (2 req/s is the default Glances WebUI/TUI refresh; 10 and 100 req/s
@@ -197,28 +197,31 @@ stand in for heavier polling):
 
 | Polling load | glances-rs RSS | glances-rs CPU | Glances RSS | Glances CPU |
 |---|---|---|---|---|
-| at rest (no client) | **≈ 4.5 MiB** | ≈ 0 % | ≈ 69 MiB | collects continuously |
-| 2 req/s  | 4.7 MiB | 0.25 % | 69 MiB | 0.50 % |
-| 10 req/s | 4.9 MiB | 0.25 % | 69 MiB | 1.25 % |
-| 100 req/s | 5.6 MiB | 2.25 % | 69 MiB | 9.0 % |
+| at rest (no client) | **≈ 3.8 MiB** | ≈ 0 % | ≈ 107 MiB | collects continuously |
+| 2 req/s  | 3.8 MiB | 0.20 % | 107.5 MiB | 1.80 % |
+| 10 req/s | 4.0 MiB | 0.50 % | 109 MiB | 6.50 % |
+| 100 req/s | 5.5 MiB | 1.60 % | 115.7 MiB | 11.0 % |
 
 Glances was run with the exact same scope —
-`glances --disable-plugins all --enable-plugins cpu,load,mem,network
---disable-history --disable-webui -w`. Even like-for-like, glances-rs uses
-**~15× less memory** and a fraction of the CPU. The binary is a single
-2.1 MiB file vs a Python install (interpreter + FastAPI/uvicorn/psutil +
-~30 deps).
+`glances --disable-plugins all --enable-plugins
+cpu,load,mem,network,system,uptime,memswap,fs,diskio --disable-history
+--disable-webui -w`. Even like-for-like, glances-rs uses **~28× less memory**
+at rest (~21× under the heaviest polling) and a fraction of the CPU. The binary
+is a single 2.1 MiB file vs a Python install (interpreter + FastAPI/uvicorn/
+psutil + ~30 deps).
 
 Two design choices drive this: a compiled, GC-free runtime, and **lazy
 collection** — glances-rs collects nothing while no client is connected and
-its memory barely moves under load, whereas Glances' scheduler runs
+stays near its idle RSS until polled hard, whereas Glances' scheduler runs
 continuously (the footprint weakness its own v5 architecture document
-acknowledges). The memory gap is the Python+framework baseline, not the
-plugin count: scoping Glances to four plugins barely changed its RSS.
+acknowledges). Most of the gap is the Python+framework baseline: even at rest,
+scoped to the very same nine plugins, Glances sits ~28× above glances-rs before
+a single request is served.
 
-> **Honest caveats.** Numbers come from one container, not your server —
+> **Honest caveats.** Numbers come from one machine, not your server —
 > treat them as indicative and run the script on your target. The
-> comparison uses Glances **4.5.5 stable**, not the `develop-v5` branch.
+> comparison uses Glances **4.5.5 stable** (REST API v4), not the
+> `develop-v5` branch.
 
 ```sh
 # Reproduce (Linux): start each server, then, on the same machine:

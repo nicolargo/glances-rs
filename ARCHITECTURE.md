@@ -471,7 +471,22 @@ unwinding robustness is preferred.
 > (`saturating_sub`, `?`, `unwrap_or`). Revisit only if per-plugin panic
 > isolation (with registry cleanup on task death) is later deemed worth it.
 
----
+### Async runtime — `current_thread`
+
+`main` runs Tokio's **`current_thread`** runtime, not the multi-thread default.
+
+> **Resolved (Phase 9): single-threaded runtime.** `#[tokio::main]` defaults to
+> the multi-thread runtime, which spawns *one worker per core* — 16 idle OS
+> threads on a 16-core host — for a workload whose heaviest measured load is
+> ~2 % CPU. The work is trivial and I/O-bound (a few `/proc`/`sysinfo` reads
+> plus a few KB of JSON per cycle), so that parallelism buys nothing and costs
+> RSS (worker stacks touched under load). The §5.2 concurrent `/all` wake is
+> *async concurrency*, not parallelism, and runs identically on one thread.
+> Measured on a 16-core host, same nine plugins: **−18 % RSS at rest and −47 %
+> RSS under 100 req/s** (12.1 → 5.5 MiB) versus the multi-thread build, with
+> equal-or-lower CPU. The `tokio` `rt-multi-thread` feature is dropped (only
+> `rt` is needed), which also shrinks the binary. Revisit only if a future
+> plugin introduces genuinely CPU-bound, parallelisable collection.
 
 ## 10. Open questions for implementation
 

@@ -386,9 +386,16 @@ hunt for regressions. This phase is a **study + measurement + recommendation**
 justify it, and only if it does not compromise correctness or the §3 lazy
 contract.
 
-- [ ] **Re-baseline** with `scripts/footprint.sh`: RSS/CPU at rest and under
-      2/10/100 req/s on `/all`, now with nine plugins. Compare against the
-      v0.1.0 numbers in the README; flag any regression beyond noise.
+- [x] **Re-baseline** with `scripts/footprint.sh`: RSS/CPU at rest and under
+      2/10/100 req/s on `/all`, now with nine plugins (vs Glances 4.5.5, same
+      scope). README footprint table refreshed; full study in
+      `docs/footprint-audit-v0.2.0.md`.
+- [x] **Async runtime → `current_thread`** (the headline win). The default
+      multi-thread runtime spawned one worker per core (16 idle threads) for a
+      ~2 % CPU workload. Switched to `current_thread` and dropped tokio's
+      `rt-multi-thread` feature: **−18 % RSS at rest, −47 % under 100 req/s**
+      (12.1 → 5.5 MiB), binary 2.2 → 2.1 MiB, suite green. Recorded in
+      ARCHITECTURE.md §9.
 - [ ] **Shared sampler (§5.2)** — now that several plugins read the same
       source (`/proc/stat` for `cpu`+`system`, `/proc/meminfo`·`vmstat` for
       `mem`+`memswap`), measure whether redundant reads/refreshes actually
