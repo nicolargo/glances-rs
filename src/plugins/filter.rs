@@ -34,6 +34,17 @@ impl KeyFilter {
     }
 }
 
+/// The operator's `hide` list, or the plugin's defaults when they set none —
+/// how Glances ships sensible defaults (hiding loop/docker/boot &c.) that an
+/// explicit `hide` in the config replaces.
+pub fn hide_or_default(user_hide: Vec<String>, defaults: &[&str]) -> Vec<String> {
+    if user_hide.is_empty() {
+        defaults.iter().map(|s| (*s).to_string()).collect()
+    } else {
+        user_hide
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +70,11 @@ mod tests {
         assert!(!eth_only.shown("eth1"));
         assert!(!eth_only.shown("wlan0"));
         assert!(!eth_only.shown("lo"));
+    }
+
+    #[test]
+    fn hide_or_default_uses_defaults_only_when_user_sets_none() {
+        assert_eq!(hide_or_default(vec![], &["loop.*"]), ["loop.*"]);
+        assert_eq!(hide_or_default(vec!["^sr".into()], &["loop.*"]), ["^sr"]);
     }
 }

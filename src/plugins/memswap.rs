@@ -1,21 +1,25 @@
 //! `memswap` plugin — swap usage. Payload: docs/api.md §5.7.
 //!
 //! A **part-rate** plugin: `total`/`used`/`free`/`percent` are instantaneous,
-//! while `sin`/`sout` are cumulative byte counters. Following Glances, the
-//! counters are emitted **raw** (not as a server-side per-second rate) next to
-//! a measured `time_since_update`, so a client derives the rate from two
-//! samples. Because nothing is diffed server-side there is no §5.5 warm-up to
-//! pay — only the previous `Instant` is kept, to fill `time_since_update`.
+//! while `sin`/`sout` are **per-second rates** (bytes swapped in/out per
+//! second), computed by diffing the cumulative `/proc/vmstat` counters over
+//! the measured interval — the Glances v5 shape. The whole payload is wrapped
+//! in the standard envelope (`time_since_update` + `_levels`).
 //!
-//! On Linux the full field set (`sin`/`sout` from `/proc/vmstat`) is built;
-//! other platforms degrade to the `sysinfo` subset without `sin`/`sout`.
+//! On Linux the full field set is built; other platforms degrade to the
+//! `sysinfo` swap subset without `sin`/`sout`.
 
-#[cfg(not(target_os = "linux"))]
-use super::round1;
-use super::{Plugin, PluginId, round3};
+use super::{Plugin, PluginId, envelope, round1};
 use crate::config::Config;
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[cfg(not(target_os = "linux"))]
+use super::Clock;
+#[cfg(target_os = "linux")]
+use super::RATE_WARMUP;
+#[cfg(target_os = "linux")]
+use std::time::Instant;
 #[cfg(not(target_os = "linux"))]
 use sysinfo::System;
 
@@ -31,26 +35,35 @@ impl MemSwapPlugin {
     }
 }
 
-/// Inter-cycle memory: only the timestamp of the previous cycle, used to
-/// measure `time_since_update` (§5.4). The cumulative `sin`/`sout` are read
-/// fresh each cycle and need no previous sample.
 #[derive(Default)]
 pub struct MemSwapState {
+    /// Previous cumulative `(sin, sout)` for the rate diff (§5.4).
+    #[cfg(target_os = "linux")]
+    prev: Option<(u64, u64)>,
+    #[cfg(target_os = "linux")]
     last: Option<Instant>,
     #[cfg(not(target_os = "linux"))]
     sys: System,
+    #[cfg(not(target_os = "linux"))]
+    clock: Clock,
 }
 
-impl MemSwapState {
-    /// Measured seconds since the previous cycle (0.0 on the first one, as
-    /// Glances reports it), advancing the stored timestamp.
-    fn elapsed(&mut self) -> f64 {
-        let now = Instant::now();
-        let elapsed = self
-            .last
-            .map_or(0.0, |l| now.duration_since(l).as_secs_f64());
-        self.last = Some(now);
-        elapsed
+/// `(sin, sout)` per-second rates from two cumulative samples (§5.4:
+/// `saturating_sub` for reboot/wrap, divide by the measured interval).
+#[cfg(target_os = "linux")]
+fn swap_rates(prev: (u64, u64), cur: (u64, u64), elapsed: f64) -> (f64, f64) {
+    (
+        per_sec(cur.0.saturating_sub(prev.0), elapsed),
+        per_sec(cur.1.saturating_sub(prev.1), elapsed),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn per_sec(delta: u64, elapsed: f64) -> f64 {
+    if elapsed > 0.0 {
+        round1(delta as f64 / elapsed)
+    } else {
+        0.0
     }
 }
 
@@ -68,28 +81,47 @@ impl Plugin for MemSwapPlugin {
 
     #[cfg(target_os = "linux")]
     async fn collect(&self, state: &mut MemSwapState) -> Value {
-        let elapsed = state.elapsed();
+        if state.last.is_none() {
+            // Self-bootstrap (§5.5), cold path only: baseline sin/sout, then
+            // wait so the first response carries a real rate.
+            state.prev = super::linux::read_swap().map(|s| (s.sin, s.sout));
+            state.last = Some(Instant::now());
+            tokio::time::sleep(RATE_WARMUP).await;
+        }
+
+        let now = Instant::now();
+        let elapsed = now
+            .duration_since(state.last.expect("set above"))
+            .as_secs_f64();
+        state.last = Some(now);
+
         let Some(s) = super::linux::read_swap() else {
-            // /proc unreadable — degrade rather than fail the cycle.
-            return json!({
-                "total": 0, "used": 0, "free": 0, "percent": 0.0,
-                "sin": 0, "sout": 0, "time_since_update": round3(elapsed),
-            });
+            return envelope(
+                json!({ "total": 0, "used": 0, "free": 0, "percent": 0.0, "sin": 0.0, "sout": 0.0 }),
+                elapsed,
+            );
         };
-        json!({
-            "total": s.total,
-            "used": s.used,
-            "free": s.free,
-            "percent": s.percent,
-            "sin": s.sin,
-            "sout": s.sout,
-            "time_since_update": round3(elapsed),
-        })
+        let (sin, sout) = match state.prev {
+            Some(prev) => swap_rates(prev, (s.sin, s.sout), elapsed),
+            None => (0.0, 0.0),
+        };
+        state.prev = Some((s.sin, s.sout));
+        envelope(
+            json!({
+                "total": s.total,
+                "used": s.used,
+                "free": s.free,
+                "percent": s.percent,
+                "sin": sin,
+                "sout": sout,
+            }),
+            elapsed,
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
     async fn collect(&self, state: &mut MemSwapState) -> Value {
-        let elapsed = state.elapsed();
+        let tsu = state.clock.tick();
         state.sys.refresh_memory();
         let total = state.sys.total_swap();
         let free = state.sys.free_swap();
@@ -99,15 +131,16 @@ impl Plugin for MemSwapPlugin {
         } else {
             round1(used as f64 / total as f64 * 100.0)
         };
-        // No sin/sout off Linux: sysinfo does not expose the swap counters,
-        // so they degrade out, like mem's active/inactive (docs/api.md §2).
-        json!({
-            "total": total,
-            "used": used,
-            "free": free,
-            "percent": percent,
-            "time_since_update": round3(elapsed),
-        })
+        // No sin/sout off Linux: sysinfo does not expose the swap counters.
+        envelope(
+            json!({
+                "total": total,
+                "used": used,
+                "free": free,
+                "percent": percent,
+            }),
+            tsu,
+        )
     }
 }
 
@@ -115,8 +148,20 @@ impl Plugin for MemSwapPlugin {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn swap_rates_are_per_second_and_clamp_on_rollback() {
+        // 4096 bytes swapped in over 2 s -> 2048 B/s; sout unchanged.
+        assert_eq!(
+            swap_rates((1_000, 500), (1_000 + 4_096, 500), 2.0),
+            (2_048.0, 0.0)
+        );
+        // Reboot: counter lower than before -> clamped to 0.
+        assert_eq!(swap_rates((9_000, 9_000), (10, 10), 2.0), (0.0, 0.0));
+    }
+
     #[tokio::test]
-    async fn collect_matches_the_frozen_schema() {
+    async fn collect_matches_the_v5_envelope() {
         let plugin = MemSwapPlugin::new(&Config::default());
         let mut state = MemSwapState::default();
         let value = plugin.collect(&mut state).await;
@@ -125,30 +170,19 @@ mod tests {
         for field in ["total", "used", "free", "percent", "time_since_update"] {
             assert!(obj.contains_key(field), "missing field {field}");
         }
+        assert_eq!(obj["_levels"], json!({}));
         let percent = obj["percent"].as_f64().unwrap();
         assert!((0.0..=100.0).contains(&percent), "percent = {percent}");
-        // First cycle: Glances-style zero elapsed.
-        assert_eq!(obj["time_since_update"].as_f64().unwrap(), 0.0);
     }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn linux_payload_carries_sin_sout() {
+    async fn linux_payload_carries_sin_sout_as_rates() {
         let plugin = MemSwapPlugin::new(&Config::default());
         let mut state = MemSwapState::default();
         let value = plugin.collect(&mut state).await;
-        let obj = value.as_object().unwrap();
-        assert!(obj.contains_key("sin"));
-        assert!(obj.contains_key("sout"));
-    }
-
-    #[tokio::test]
-    async fn second_cycle_measures_real_elapsed() {
-        let plugin = MemSwapPlugin::new(&Config::default());
-        let mut state = MemSwapState::default();
-        plugin.collect(&mut state).await;
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        let value = plugin.collect(&mut state).await;
-        assert!(value["time_since_update"].as_f64().unwrap() >= 0.03);
+        // sin/sout are floats (rates), not cumulative integers.
+        assert!(value["sin"].is_number());
+        assert!(value["sout"].is_number());
     }
 }

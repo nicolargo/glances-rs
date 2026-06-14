@@ -9,7 +9,7 @@
 //! Linux-only: counters come from `/proc/diskstats`. `sysinfo` exposes no
 //! per-disk I/O, so other platforms return an empty `data` array.
 
-use super::filter::KeyFilter;
+use super::filter::{KeyFilter, hide_or_default};
 use super::{Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
@@ -43,21 +43,15 @@ impl DiskioPlugin {
     pub fn new(config: &Config) -> Self {
         let plugin = config.plugins.get(PluginId::Diskio.as_str());
         let show = plugin.map(|p| p.show.clone()).unwrap_or_default();
-        let hide = default_hide(plugin.map(|p| p.hide.clone()).unwrap_or_default());
+        let hide = hide_or_default(
+            plugin.map(|p| p.hide.clone()).unwrap_or_default(),
+            DEFAULT_HIDE,
+        );
         Self {
             refresh: config.refresh_for(PluginId::Diskio.as_str()),
             filter: KeyFilter::new(&show, &hide),
             alias: plugin.map(|p| p.alias.clone()).unwrap_or_default(),
         }
-    }
-}
-
-/// The operator's `hide` list, or the plugin defaults when they set none.
-fn default_hide(user_hide: Vec<String>) -> Vec<String> {
-    if user_hide.is_empty() {
-        DEFAULT_HIDE.iter().map(|s| (*s).to_string()).collect()
-    } else {
-        user_hide
     }
 }
 
@@ -254,16 +248,5 @@ mod tests {
         assert_eq!(names, ["sda", "sdb"]);
         assert_eq!(items[0]["alias"], "root-disk");
         assert!(items[1].get("alias").is_none());
-    }
-}
-
-#[cfg(test)]
-mod default_hide_tests {
-    use super::*;
-
-    #[test]
-    fn default_hide_used_only_when_operator_sets_none() {
-        assert_eq!(default_hide(vec![]), ["loop.*", "/dev/loop.*"]);
-        assert_eq!(default_hide(vec!["^sr".into()]), ["^sr"]);
     }
 }

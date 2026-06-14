@@ -353,6 +353,28 @@ the rate ones). Integration: cold `/all` now returns all nine plugins.
 `system`, `uptime`, `memswap`, `fs`, `diskio`); values plausible against
 `free`/`df`/`iostat` on Linux; `docs/api.md` §5 covers all nine.
 
+### Phase 8.1 — Align the output to the Glances v5 REST API
+
+A review against a live Glances v5 (`develop-v5`) server showed the payloads
+followed the **v4** conventions, not v5. Corrected across every plugin
+(`docs/api.md` §4 rewritten):
+
+- [x] **Response envelope** — shared `plugins::envelope()`: object plugins gain
+      top-level `time_since_update` + `_levels` (`{}` until alerting); collection
+      plugins nest their array under `data`. `plugins::Clock` gives instantaneous
+      plugins a `time_since_update`.
+- [x] **Plain per-second rates** — dropped the v4 `X`/`X_gauge`/`X_rate_per_sec`
+      triple; a rate field is now a single per-second value (network `bytes_*`,
+      diskio `read_*`/`write_*`, cpu `ctx_switches`/…). **memswap `sin`/`sout`
+      are now rates** (warm-up added), not cumulative.
+- [x] **uptime** = `{"seconds": <int>}` (the v5 shape; was the v4 timedelta
+      string).
+- [x] **Default `hide` lists** (`filter::hide_or_default`, replaced by an
+      explicit `hide`): network `docker.*,lo`; fs `/boot.*,.*/snap.*`; diskio
+      `loop.*,/dev/loop.*`.
+- [x] **Conditional `alias`** on collection items — present only when configured
+      for that item (was always `null`).
+
 ---
 
 ## Phase 9 — Footprint optimization study

@@ -1,21 +1,24 @@
 //! `fs` plugin — disk-space usage. Collection, **instantaneous** (no rate):
-//! one item per mounted filesystem, primary key `mnt_point` (§8.1), filtered
-//! by the shared `show`/`hide` regex. Payload: docs/api.md §5.8.
+//! one item per mounted filesystem, primary key `mnt_point` (§8.1).
+//! Payload: docs/api.md §5.8.
 //!
-//! Sourced from `sysinfo::Disks` (cross-platform, like `network` uses
-//! `Networks`). `used`/`percent` are derived as `size - free` (free is the
-//! space available to the caller); this slightly overstates usage versus
-//! psutil's root-reserve-aware percent — revisit when alerting needs exact
-//! thresholds. `key` and `options` (present in Glances) are omitted, as is
-//! already the case for `network`'s `key`.
+//! Glances v5 shape: items under `data`, a single top-level
+//! `time_since_update` + `_levels`. Sourced from `sysinfo::Disks`
+//! (cross-platform, like `network`). `used`/`percent` are derived as
+//! `size - free` (free = space available to the caller); this slightly
+//! overstates usage versus psutil's root-reserve-aware percent — revisit when
+//! alerting needs exact thresholds. `/boot` and snap mounts hidden by default.
 
-use super::filter::KeyFilter;
-use super::{Plugin, PluginId, round1};
+use super::filter::{KeyFilter, hide_or_default};
+use super::{Clock, Plugin, PluginId, envelope, round1};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::Duration;
 use sysinfo::Disks;
+
+/// Default `hide` when the operator configures none: boot and snap mounts.
+const DEFAULT_HIDE: &[&str] = &["/boot.*", ".*/snap.*"];
 
 pub struct FsPlugin {
     refresh: Duration,
@@ -27,12 +30,14 @@ pub struct FsPlugin {
 impl FsPlugin {
     pub fn new(config: &Config) -> Self {
         let plugin = config.plugins.get(PluginId::Fs.as_str());
+        let show = plugin.map(|p| p.show.clone()).unwrap_or_default();
+        let hide = hide_or_default(
+            plugin.map(|p| p.hide.clone()).unwrap_or_default(),
+            DEFAULT_HIDE,
+        );
         Self {
             refresh: config.refresh_for(PluginId::Fs.as_str()),
-            filter: KeyFilter::new(
-                plugin.map(|p| p.show.as_slice()).unwrap_or_default(),
-                plugin.map(|p| p.hide.as_slice()).unwrap_or_default(),
-            ),
+            filter: KeyFilter::new(&show, &hide),
             alias: plugin.map(|p| p.alias.clone()).unwrap_or_default(),
         }
     }
@@ -40,12 +45,14 @@ impl FsPlugin {
 
 pub struct FsState {
     disks: Disks,
+    clock: Clock,
 }
 
 impl Default for FsState {
     fn default() -> Self {
         Self {
             disks: Disks::new(),
+            clock: Clock::default(),
         }
     }
 }
@@ -90,13 +97,9 @@ impl Plugin for FsPlugin {
                 }
                 let size = disk.total_space();
                 let (used, percent) = usage(size, disk.available_space());
-                // alias is always present (null when unset), mirroring network.
-                let alias = self
-                    .alias
-                    .get(&mnt)
-                    .map(|a| json!(a))
-                    .unwrap_or(Value::Null);
-                Some(json!({
+                // alias only when configured for this mount (Glances v5).
+                let alias = self.alias.get(&mnt).cloned();
+                let mut item = json!({
                     "device_name": disk.name().to_string_lossy(),
                     "fs_type": disk.file_system().to_string_lossy(),
                     "mnt_point": mnt,
@@ -104,12 +107,15 @@ impl Plugin for FsPlugin {
                     "used": used,
                     "free": disk.available_space(),
                     "percent": percent,
-                    "alias": alias,
-                }))
+                });
+                if let Some(a) = alias {
+                    item["alias"] = json!(a);
+                }
+                Some(item)
             })
             .collect();
         items.sort_by(|a, b| a["mnt_point"].as_str().cmp(&b["mnt_point"].as_str()));
-        Value::Array(items)
+        envelope(Value::Array(items), state.clock.tick())
     }
 }
 
@@ -128,11 +134,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collect_is_an_array_of_well_formed_items() {
+    async fn collect_is_an_envelope_of_well_formed_items() {
         let plugin = FsPlugin::new(&Config::default());
         let mut state = FsState::default();
         let value = plugin.collect(&mut state).await;
-        let items = value.as_array().expect("fs payload is an array");
+
+        // v5 envelope: items under data, top-level tsu + _levels.
+        assert!(value["time_since_update"].is_number());
+        assert_eq!(value["_levels"], json!({}));
+        let items = value["data"].as_array().expect("data is an array");
         for item in items {
             for field in [
                 "device_name",
@@ -142,7 +152,6 @@ mod tests {
                 "used",
                 "free",
                 "percent",
-                "alias",
             ] {
                 assert!(item.get(field).is_some(), "missing field {field}: {item}");
             }

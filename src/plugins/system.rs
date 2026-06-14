@@ -4,7 +4,7 @@
 //! lazy engine like any other. On Linux the `linux_distro` field is read from
 //! `/etc/os-release` (the Glances source); other platforms omit it.
 
-use super::{Plugin, PluginId};
+use super::{Clock, Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -49,7 +49,7 @@ fn platform_bits() -> &'static str {
 
 #[async_trait::async_trait]
 impl Plugin for SystemPlugin {
-    type State = ();
+    type State = Clock;
 
     fn id(&self) -> PluginId {
         PluginId::System
@@ -60,7 +60,7 @@ impl Plugin for SystemPlugin {
     }
 
     #[cfg(target_os = "linux")]
-    async fn collect(&self, _state: &mut ()) -> Value {
+    async fn collect(&self, clock: &mut Clock) -> Value {
         let hostname = System::host_name().unwrap_or_default();
         let os_name = os_name();
         let platform = platform_bits();
@@ -69,31 +69,37 @@ impl Plugin for SystemPlugin {
         let linux_distro = super::linux::read_os_release().unwrap_or_default();
         // Glances composition: "<distro> <platform> / <os_name> <os_version>".
         let hr_name = format!("{linux_distro} {platform} / {os_name} {os_version}");
-        json!({
-            "os_name": os_name,
-            "hostname": hostname,
-            "platform": platform,
-            "os_version": os_version,
-            "linux_distro": linux_distro,
-            "hr_name": hr_name,
-        })
+        envelope(
+            json!({
+                "os_name": os_name,
+                "hostname": hostname,
+                "platform": platform,
+                "os_version": os_version,
+                "linux_distro": linux_distro,
+                "hr_name": hr_name,
+            }),
+            clock.tick(),
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
-    async fn collect(&self, _state: &mut ()) -> Value {
+    async fn collect(&self, clock: &mut Clock) -> Value {
         let hostname = System::host_name().unwrap_or_default();
         let os_name = os_name();
         let platform = platform_bits();
         let os_version = System::os_version().unwrap_or_default();
         // No `linux_distro` off Linux; Glances composes hr_name differently.
         let hr_name = format!("{os_name} {os_version} {platform}");
-        json!({
-            "os_name": os_name,
-            "hostname": hostname,
-            "platform": platform,
-            "os_version": os_version,
-            "hr_name": hr_name,
-        })
+        envelope(
+            json!({
+                "os_name": os_name,
+                "hostname": hostname,
+                "platform": platform,
+                "os_version": os_version,
+                "hr_name": hr_name,
+            }),
+            clock.tick(),
+        )
     }
 }
 
@@ -104,7 +110,7 @@ mod tests {
     #[tokio::test]
     async fn collect_matches_the_frozen_schema() {
         let plugin = SystemPlugin::new(&Config::default());
-        let value = plugin.collect(&mut ()).await;
+        let value = plugin.collect(&mut Clock::default()).await;
 
         let obj = value.as_object().expect("system payload is an object");
         for field in ["os_name", "hostname", "platform", "os_version", "hr_name"] {
@@ -120,7 +126,7 @@ mod tests {
     #[tokio::test]
     async fn linux_payload_carries_linux_distro() {
         let plugin = SystemPlugin::new(&Config::default());
-        let value = plugin.collect(&mut ()).await;
+        let value = plugin.collect(&mut Clock::default()).await;
         assert!(value.as_object().unwrap().contains_key("linux_distro"));
     }
 }

@@ -112,10 +112,10 @@ async fn all_contract_plugins_answer_cold_with_real_data() {
         assert_eq!(status, StatusCode::OK, "{path}");
         assert!(value.is_object(), "{path}: {value}");
     }
-    // ...an array for the collection plugin.
+    // ...the collection plugin is an envelope wrapping a data array.
     let (status, value) = get(&router, "/api/5/network").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(value.is_array());
+    assert!(value["data"].is_array());
 }
 
 #[tokio::test]
@@ -131,7 +131,7 @@ async fn all_returns_every_registered_plugin() {
         assert!(obj.contains_key(name), "/all missing {name}: {value}");
     }
     assert!(obj["cpu"].is_object());
-    assert!(obj["network"].is_array());
+    assert!(obj["network"]["data"].is_array());
 }
 
 #[tokio::test]
@@ -206,23 +206,21 @@ async fn cold_cpu_carries_a_real_rate() {
 async fn cold_network_carries_rates_for_existing_interfaces() {
     // Same promise for the collection plugin: the self-bootstrap means
     // the first response already has one item per (visible) interface.
-    let (router, _) = make_app("");
+    // Override the default docker/lo hide so loopback is visible.
+    let (router, _) = make_app("[plugins.network]\nhide = [\"docker.*\"]");
     let (status, value) = get(&router, "/api/5/network").await;
     assert_eq!(status, StatusCode::OK);
-    let items = value.as_array().unwrap();
+    // The v5 envelope: one top-level time_since_update, items under data.
+    assert!(value["time_since_update"].is_number());
+    let items = value["data"].as_array().unwrap();
     assert!(!items.is_empty(), "expected at least one interface");
     for item in items {
-        for field in [
-            "interface_name",
-            "bytes_recv",
-            "bytes_recv_gauge",
-            "bytes_recv_rate_per_sec",
-            "bytes_sent",
-            "bytes_all",
-            "time_since_update",
-        ] {
+        for field in ["interface_name", "bytes_recv", "bytes_sent", "bytes_all"] {
             assert!(!item[field].is_null(), "missing field {field}: {item}");
         }
+        // v5: plain per-second rates, no gauge / rate_per_sec / per-item tsu.
+        assert!(item.get("bytes_recv_gauge").is_none());
+        assert!(item.get("time_since_update").is_none());
     }
 }
 
@@ -243,9 +241,12 @@ async fn linux_cpu_and_network_match_the_full_glances_field_set() {
         assert!(!cpu[field].is_null(), "cpu missing {field}: {cpu}");
     }
 
+    // Show lo (bypass the default docker/lo hide) so there is an item.
+    let (router, _) = make_app("[plugins.network]\nhide = [\"docker.*\"]");
     let (_, net) = get(&router, "/api/5/network").await;
-    let item = &net.as_array().unwrap()[0];
-    for field in ["is_up", "speed", "alias"] {
+    let item = &net["data"].as_array().unwrap()[0];
+    // is_up/speed are Linux extras; alias is conditional (absent here).
+    for field in ["is_up", "speed"] {
         assert!(
             item.get(field).is_some(),
             "network item missing {field}: {item}"
@@ -255,10 +256,12 @@ async fn linux_cpu_and_network_match_the_full_glances_field_set() {
 
 #[tokio::test]
 async fn network_alias_from_config_is_surfaced() {
-    // The container always has a loopback interface; alias it.
-    let (router, _) = make_app("[plugins.network.alias]\nlo = \"loopback\"");
+    // The container always has a loopback interface; show and alias it.
+    let (router, _) = make_app(
+        "[plugins.network]\nhide = [\"docker.*\"]\n[plugins.network.alias]\nlo = \"loopback\"",
+    );
     let (_, value) = get(&router, "/api/5/network").await;
-    let lo = value
+    let lo = value["data"]
         .as_array()
         .unwrap()
         .iter()
@@ -273,7 +276,7 @@ async fn network_hide_filter_is_applied() {
     // The container always has a loopback interface; hide it.
     let (router, _) = make_app("[plugins.network]\nhide = [\"^lo$\"]");
     let (_, value) = get(&router, "/api/5/network").await;
-    let names: Vec<&str> = value
+    let names: Vec<&str> = value["data"]
         .as_array()
         .unwrap()
         .iter()
