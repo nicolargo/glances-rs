@@ -188,35 +188,41 @@ loopback and reachable only through the proxy.
 ## Footprint
 
 The whole reason glances-rs exists is to serve the same API with a far
-smaller footprint than the Python original. Measured on the same machine
-with [`scripts/footprint.sh`](scripts/footprint.sh) (a `/proc`-based
-sampler — RSS at rest and the peak RSS + CPU under a steady polling load on
-`/api/.../all`):
+smaller footprint than the Python original. Measured **on the same machine,
+with the same four plugins**, using
+[`scripts/footprint.sh`](scripts/footprint.sh) — a `/proc`-based sampler of
+resident memory and CPU under a rate-controlled polling load on
+`/…/all` (2 req/s is the default Glances WebUI/TUI refresh; 10 and 100 req/s
+stand in for heavier polling):
 
-| | glances-rs (4 plugins) | Glances 4.5.5 server |
-|---|---|---|
-| RSS at rest (no client) | **≈ 4.4 MiB** | ≈ 70 MiB |
-| RSS under polling load | ≈ 5.3 MiB | ≈ 74 MiB |
-| CPU under the same load | **≈ 0 %** | ≈ 90 % of one core |
-| Binary / install | single 2.1 MiB binary | Python + ~30 deps |
+| Polling load | glances-rs RSS | glances-rs CPU | Glances RSS | Glances CPU |
+|---|---|---|---|---|
+| at rest (no client) | **≈ 4.5 MiB** | ≈ 0 % | ≈ 69 MiB | collects continuously |
+| 2 req/s  | 4.7 MiB | 0.25 % | 69 MiB | 0.50 % |
+| 10 req/s | 4.9 MiB | 0.25 % | 69 MiB | 1.25 % |
+| 100 req/s | 5.6 MiB | 2.25 % | 69 MiB | 9.0 % |
 
-Roughly an order of magnitude less memory, and near-zero CPU where Glances
-saturates a core under the same request rate. Two design choices drive
-this: a compiled, GC-free runtime, and **lazy collection** — glances-rs
-collects nothing while no client is connected, whereas Glances' scheduler
-runs continuously (the footprint weakness its own v5 architecture document
-acknowledges).
+Glances was run with the exact same scope —
+`glances --disable-plugins all --enable-plugins cpu,load,mem,network
+--disable-history --disable-webui -w`. Even like-for-like, glances-rs uses
+**~15× less memory** and a fraction of the CPU. The binary is a single
+2.1 MiB file vs a Python install (interpreter + FastAPI/uvicorn/psutil +
+~30 deps).
 
-> **Honest caveats.** These numbers come from one container, not your
-> server, so treat them as indicative — run the script on your target for
-> real figures. The comparison uses Glances **4.5.5 stable** (not the
-> `develop-v5` branch) with its default plugin set, which is larger than
-> glances-rs's four; much of Glances' baseline RSS is the Python
-> interpreter plus FastAPI/uvicorn/psutil, independent of plugin count.
+Two design choices drive this: a compiled, GC-free runtime, and **lazy
+collection** — glances-rs collects nothing while no client is connected and
+its memory barely moves under load, whereas Glances' scheduler runs
+continuously (the footprint weakness its own v5 architecture document
+acknowledges). The memory gap is the Python+framework baseline, not the
+plugin count: scoping Glances to four plugins barely changed its RSS.
+
+> **Honest caveats.** Numbers come from one container, not your server —
+> treat them as indicative and run the script on your target. The
+> comparison uses Glances **4.5.5 stable**, not the `develop-v5` branch.
 
 ```sh
 # Reproduce (Linux): start each server, then, on the same machine:
-scripts/footprint.sh "$(pgrep -n glances-rs)" http://127.0.0.1:61208/api/5/all
+scripts/footprint.sh "$(pgrep -n glances-rs)" http://127.0.0.1:61208/api/5/all "2 10 100"
 ```
 
 ## License

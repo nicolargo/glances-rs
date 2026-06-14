@@ -249,11 +249,11 @@ rejected; CORS header absent by default, present for an allow-listed origin;
 
 **Goal:** prove the project's reason to exist, then ship.
 
-- [x] **Footprint measurement** (`scripts/footprint.sh`, `/proc`-based):
-      glances-rs ≈ 4.4 MiB RSS at rest / 5.3 MiB under load / ≈ 0 % CPU vs
-      Glances 4.5.5 server ≈ 70 MiB / 74 MiB / ≈ 90 % of a core on the same
-      machine. Recorded in the README with caveats (stable not develop-v5,
-      Glances' larger default plugin set, single-container numbers).
+- [x] **Footprint measurement** (`scripts/footprint.sh`, `/proc`-based,
+      rate-controlled load, Glances scoped to the same four plugins):
+      glances-rs ≈ 4.5 MiB RSS (≈ 5.6 at 100 req/s), 0.25–2.25 % CPU vs
+      Glances 4.5.5 ≈ 69 MiB, 0.5–9 % CPU at 2/10/100 req/s on the same
+      machine — ~15× less memory like-for-like. Recorded in the README.
 - [x] Confirm or drop `panic = "abort"` → **kept**; rationale (supervised
       deployment, footprint, the stale-registry pitfall of unwinding)
       recorded in ARCHITECTURE.md §9/§10.
