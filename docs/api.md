@@ -13,7 +13,7 @@
 |--------------------------|--------|-----------------------------------------|--------------|
 | `/api/5/{plugin}`        | GET    | The plugin's payload (object or array)  | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <payload>, … }`  | `200` (possibly partial — see §3) |
-| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","load","mem","memswap","network","system","uptime"]` | `200` |
+| `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
@@ -247,6 +247,37 @@ what Glances v5 serializes at the REST layer (its uptime stat is a
   use the kernel page size (`sysconf(_SC_PAGESIZE)`). **macOS/Windows:**
   degrade to `total`/`used`/`free`/`percent`/`time_since_update`; `sin`/`sout`
   are omitted (`sysinfo` does not expose the swap counters).
+
+### 5.8 `fs` — **array** of objects (collection plugin), instantaneous
+
+One element per mounted filesystem; primary key `mnt_point`:
+
+```json
+[
+  {
+    "device_name": "/dev/vda1",
+    "fs_type":     "ext4",
+    "mnt_point":   "/",
+    "size":        270553174016,
+    "used":        240020131840,
+    "free":        30533042176,
+    "percent":     88.7,
+    "alias":       null
+  }
+]
+```
+
+- All sizes in bytes; `free` is the space available to the caller,
+  `used = size - free`, `percent = used / size * 100` (1 decimal). This
+  slightly overstates usage versus psutil's root-reserve-aware percent (which
+  excludes blocks reserved for root); the gap is the reserved fraction. It
+  will be revisited when alerting (v0.3.0) needs exact thresholds.
+- Filesystems are filtered by the configured `show`/`hide` regexes on
+  `mnt_point` (no filtering by default). `alias` comes from `[plugins.fs].alias`
+  keyed by mount point (`null` when unset), as for `network`.
+- **Omitted vs. Glances:** `key` (the primary-key name, dropped for every
+  collection plugin here — see `network`) and `options` (mount flags;
+  `sysinfo` does not expose them). Same payload on every platform.
 
 ---
 

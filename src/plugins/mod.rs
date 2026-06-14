@@ -2,6 +2,8 @@
 //! v1 plugins: `mem`, `cpu`, `load`, `network` (§8).
 
 pub mod cpu;
+pub mod filter;
+pub mod fs;
 pub mod load;
 pub mod mem;
 pub mod memswap;
@@ -33,6 +35,7 @@ pub(crate) fn round3(x: f64) -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PluginId {
     Cpu,
+    Fs,
     Load,
     Mem,
     MemSwap,
@@ -43,8 +46,9 @@ pub enum PluginId {
 
 impl PluginId {
     /// Every plugin this build exposes (the v1 four plus the v0.2.0 additions).
-    pub const ALL: [PluginId; 7] = [
+    pub const ALL: [PluginId; 8] = [
         PluginId::Cpu,
+        PluginId::Fs,
         PluginId::Load,
         PluginId::Mem,
         PluginId::MemSwap,
@@ -56,6 +60,7 @@ impl PluginId {
     pub fn as_str(self) -> &'static str {
         match self {
             PluginId::Cpu => "cpu",
+            PluginId::Fs => "fs",
             PluginId::Load => "load",
             PluginId::Mem => "mem",
             PluginId::MemSwap => "memswap",
@@ -69,6 +74,7 @@ impl PluginId {
     pub fn parse(name: &str) -> Option<PluginId> {
         match name {
             "cpu" => Some(PluginId::Cpu),
+            "fs" => Some(PluginId::Fs),
             "load" => Some(PluginId::Load),
             "mem" => Some(PluginId::Mem),
             "memswap" => Some(PluginId::MemSwap),

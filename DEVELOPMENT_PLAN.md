@@ -325,12 +325,13 @@ re-listed per plugin:
       Linux-only `libc` dep (already transitive) for the page size; degrades to
       the `sysinfo` swap subset without `sin`/`sout` off Linux (docs/api.md
       §5.7).
-- [ ] **`fs`** — **collection**, instantaneous (disk *space*, no rate). One
-      item per mount point, keyed by `mnt_point`. Reuse the `network`
-      `show`/`hide` regex filtering **inside `collect()`** (§8.1) on the mount
-      point / device. No inter-cycle state (instantaneous) ⇒ no `previous`,
-      no leak risk — but the per-item `_levels` cleanup rule (§8.1) will apply
-      once alerting lands in v0.3.0; note it in a comment.
+- [x] **`fs`** — **collection**, instantaneous (disk *space*, no rate). One
+      item per mount point, keyed by `mnt_point`, from `sysinfo::Disks`
+      (cross-platform, like `network`). Extracted the `show`/`hide` regex into
+      a shared `plugins::filter::KeyFilter` (now used by `network` and `fs`,
+      and `diskio` next). No inter-cycle state ⇒ no leak risk. `percent =
+      used/size` (a slight approximation of psutil's root-reserve-aware
+      percent); `key` and `options` omitted vs. Glances (docs/api.md §5.8).
 - [ ] **`diskio`** — **collection + rate**, the hardest, lands last. One item
       per disk (`/proc/diskstats`), cumulative `read`/`write` bytes & counts →
       rates. Combines **all** the traps: §5.4 (`saturating_sub`, skip a disk

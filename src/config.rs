@@ -10,8 +10,8 @@ use std::time::Duration;
 
 /// Plugins known to this build. A `[plugins.<name>]` section for any other
 /// name is an operator typo and must fail loudly, not be silently ignored.
-pub const KNOWN_PLUGINS: [&str; 7] = [
-    "cpu", "load", "mem", "memswap", "network", "system", "uptime",
+pub const KNOWN_PLUGINS: [&str; 8] = [
+    "cpu", "fs", "load", "mem", "memswap", "network", "system", "uptime",
 ];
 
 /// Same default port as the Glances REST server.

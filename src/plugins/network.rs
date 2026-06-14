@@ -5,9 +5,9 @@
 //! `/sys/class/net`). `alias` comes from `[plugins.network].alias` on every
 //! platform (null when unset), mirroring Glances.
 
+use super::filter::KeyFilter;
 use super::{Plugin, PluginId, RATE_WARMUP, round1, round3};
 use crate::config::Config;
-use regex_lite::Regex;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ type Counters = (u64, u64);
 
 pub struct NetworkPlugin {
     refresh: Duration,
-    filter: InterfaceFilter,
+    filter: KeyFilter,
     /// Interface name -> operator-defined alias.
     alias: HashMap<String, String>,
 }
@@ -28,40 +28,12 @@ impl NetworkPlugin {
         let plugin = config.plugins.get(PluginId::Network.as_str());
         Self {
             refresh: config.refresh_for(PluginId::Network.as_str()),
-            filter: InterfaceFilter::new(
+            filter: KeyFilter::new(
                 plugin.map(|p| p.show.as_slice()).unwrap_or_default(),
                 plugin.map(|p| p.hide.as_slice()).unwrap_or_default(),
             ),
             alias: plugin.map(|p| p.alias.clone()).unwrap_or_default(),
         }
-    }
-}
-
-/// `show`/`hide` regex lists on the interface name. `hide` wins; an empty
-/// `show` list means "everything". Patterns are validated at config load,
-/// so a plugin only ever sees compilable ones.
-pub struct InterfaceFilter {
-    show: Vec<Regex>,
-    hide: Vec<Regex>,
-}
-
-impl InterfaceFilter {
-    pub fn new(show: &[String], hide: &[String]) -> Self {
-        let compile = |patterns: &[String]| {
-            patterns
-                .iter()
-                .map(|p| Regex::new(p).expect("regex validated by Config::validate"))
-                .collect()
-        };
-        Self {
-            show: compile(show),
-            hide: compile(hide),
-        }
-    }
-
-    fn shown(&self, name: &str) -> bool {
-        let shown = self.show.is_empty() || self.show.iter().any(|re| re.is_match(name));
-        shown && !self.hide.iter().any(|re| re.is_match(name))
     }
 }
 
@@ -136,7 +108,7 @@ impl Plugin for NetworkPlugin {
     }
 }
 
-fn sample(networks: &Networks, filter: &InterfaceFilter) -> HashMap<String, Counters> {
+fn sample(networks: &Networks, filter: &KeyFilter) -> HashMap<String, Counters> {
     networks
         .iter()
         .filter(|(name, _)| filter.shown(name))
@@ -339,23 +311,5 @@ mod tests {
         assert_eq!(items[0]["is_up"], true);
         assert_eq!(items[0]["speed"], 1_048_576_000u64);
         assert_eq!(items[0]["alias"], "LAN");
-    }
-
-    #[test]
-    fn filter_show_and_hide() {
-        let all = InterfaceFilter::new(&[], &[]);
-        assert!(all.shown("lo"));
-        assert!(all.shown("eth0"));
-
-        let no_lo = InterfaceFilter::new(&[], &["^lo$".into()]);
-        assert!(!no_lo.shown("lo"));
-        assert!(no_lo.shown("eth0"));
-
-        // hide wins over show.
-        let eth_only = InterfaceFilter::new(&["^eth".into()], &["^eth1$".into()]);
-        assert!(eth_only.shown("eth0"));
-        assert!(!eth_only.shown("eth1"));
-        assert!(!eth_only.shown("wlan0"));
-        assert!(!eth_only.shown("lo"));
     }
 }
