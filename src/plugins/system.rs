@@ -70,14 +70,17 @@ impl Plugin for SystemPlugin {
         let linux_distro = super::linux::read_os_release().unwrap_or_default();
         // Glances composition: "<distro> <platform> / <os_name> <os_version>".
         let hr_name = format!("{linux_distro} {platform} / {os_name} {os_version}");
-        envelope(json!({
-            "os_name": os_name,
-            "hostname": hostname,
-            "platform": platform,
-            "os_version": os_version,
-            "linux_distro": linux_distro,
-            "hr_name": hr_name,
-        }))
+        envelope(
+            json!({
+                "os_name": os_name,
+                "hostname": hostname,
+                "platform": platform,
+                "os_version": os_version,
+                "linux_distro": linux_distro,
+                "hr_name": hr_name,
+            }),
+            None,
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -88,13 +91,16 @@ impl Plugin for SystemPlugin {
         let os_version = System::os_version().unwrap_or_default();
         // No `linux_distro` off Linux; Glances composes hr_name differently.
         let hr_name = format!("{os_name} {os_version} {platform}");
-        envelope(json!({
-            "os_name": os_name,
-            "hostname": hostname,
-            "platform": platform,
-            "os_version": os_version,
-            "hr_name": hr_name,
-        }))
+        envelope(
+            json!({
+                "os_name": os_name,
+                "hostname": hostname,
+                "platform": platform,
+                "os_version": os_version,
+                "hr_name": hr_name,
+            }),
+            None,
+        )
     }
 }
 

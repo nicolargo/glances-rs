@@ -380,10 +380,10 @@ The envelope had been adding `time_since_update` to *every* plugin. The live
 Glances `develop-v5` server emits it only on the plugins that derive a rate
 (its `_manage_rate` decorator), so the scope was tightened to match:
 
-- [x] **Rate plugins only** — `cpu` carries it at the top level; `network` and
-      `diskio` carry it **per item** under `data` (no top-level one). The
-      instantaneous plugins (`mem`, `load`, `system`, `uptime`, `fs`) and
-      `memswap` no longer emit it.
+- [x] **Rate plugins only, top-level** — `cpu`, `network` and `diskio` carry a
+      single top-level `time_since_update` (next to `data` for the collection
+      ones — never per item). The instantaneous plugins (`mem`, `load`,
+      `system`, `uptime`, `fs`) and `memswap` no longer emit it.
 - [x] **Dropped `plugins::Clock`** — it existed only to give instantaneous
       plugins a `time_since_update`; with that gone, `load`/`system` revert to
       `State = ()` and the rest drop their clock field (one less allocation per

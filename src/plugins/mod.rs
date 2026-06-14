@@ -39,16 +39,19 @@ pub(crate) fn round3(x: f64) -> f64 {
 /// top-level `_levels` (empty `{}` until alerting lands in v0.3.0). Every
 /// plugin's `collect()` returns through this.
 ///
-/// `time_since_update` is intentionally NOT injected here. Glances emits it
-/// only on the rate plugins — `cpu` (top level) and `network`/`diskio` (one
-/// per item) — so those add it themselves before wrapping; the instantaneous
-/// plugins omit it entirely (see docs/api.md §4).
-pub(crate) fn envelope(stats: Value) -> Value {
+/// `time_since_update` is added at the **top level** only when the plugin
+/// derives a rate (`Some(elapsed)` for `cpu`/`network`/`diskio`); the
+/// instantaneous plugins pass `None` and omit it (see docs/api.md §4). It is
+/// never per-item — collection plugins carry a single top-level value.
+pub(crate) fn envelope(stats: Value, time_since_update: Option<f64>) -> Value {
     let mut out = match stats {
         Value::Array(items) => json!({ "data": items }),
         other => other,
     };
     if let Some(map) = out.as_object_mut() {
+        if let Some(tsu) = time_since_update {
+            map.insert("time_since_update".into(), json!(round3(tsu)));
+        }
         map.insert("_levels".into(), json!({}));
     }
     out

@@ -44,12 +44,15 @@ impl Plugin for LoadPlugin {
 
     async fn collect(&self, _state: &mut ()) -> Value {
         let load = System::load_average();
-        envelope(json!({
-            "min1": load.one,
-            "min5": load.five,
-            "min15": load.fifteen,
-            "cpucore": self.cpucore,
-        }))
+        envelope(
+            json!({
+                "min1": load.one,
+                "min5": load.five,
+                "min15": load.fifteen,
+                "cpucore": self.cpucore,
+            }),
+            None,
+        )
     }
 }
 

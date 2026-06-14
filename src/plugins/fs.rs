@@ -114,7 +114,7 @@ impl Plugin for FsPlugin {
             })
             .collect();
         items.sort_by(|a, b| a["mnt_point"].as_str().cmp(&b["mnt_point"].as_str()));
-        envelope(Value::Array(items))
+        envelope(Value::Array(items), None)
     }
 }
 

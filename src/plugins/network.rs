@@ -2,13 +2,13 @@
 //! key `interface_name` (ARCHITECTURE.md §8.1). Payload: docs/api.md §5.4.
 //!
 //! Glances v5 shape: items under `data`; `bytes_recv`/`bytes_sent`/`bytes_all`
-//! are **plain per-second rates**; each item carries its own
-//! `time_since_update` (rate plugin), and the envelope adds `_levels`. On Linux
-//! each item also carries `is_up` and `speed` (from `/sys/class/net`). Docker
-//! and loopback interfaces are hidden by default.
+//! are **plain per-second rates**; a single top-level `time_since_update` (rate
+//! plugin) and `_levels` sit on the envelope. On Linux each item also carries
+//! `is_up` and `speed` (from `/sys/class/net`). Docker and loopback interfaces
+//! are hidden by default.
 
 use super::filter::{KeyFilter, hide_or_default};
-use super::{Plugin, PluginId, RATE_WARMUP, envelope, round1, round3};
+use super::{Plugin, PluginId, RATE_WARMUP, envelope, round1};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -112,7 +112,7 @@ impl Plugin for NetworkPlugin {
             &self.alias,
         );
         state.previous = previous;
-        envelope(Value::Array(items))
+        envelope(Value::Array(items), Some(elapsed))
     }
 }
 
@@ -182,8 +182,6 @@ fn step(
                 "bytes_recv": per_sec(recv, elapsed),
                 "bytes_sent": per_sec(sent, elapsed),
                 "bytes_all": per_sec(all, elapsed),
-                // Rate plugin: time_since_update is per item (Glances v5).
-                "time_since_update": round3(elapsed),
             });
             // alias only when configured for this interface (Glances v5).
             if let Some(a) = alias.get(name) {
@@ -247,9 +245,10 @@ mod tests {
         assert_eq!(item["bytes_recv"], 500.0); // (2000-1000)/2
         assert_eq!(item["bytes_sent"], 250.0); // (2500-2000)/2
         assert_eq!(item["bytes_all"], 750.0);
-        // v5: plain rates only (no gauge / rate_per_sec), plus a per-item tsu.
+        // v5: plain rates only, no gauge / rate_per_sec / per-item tsu
+        // (time_since_update lives once at the envelope top level).
         assert!(item.get("bytes_recv_gauge").is_none());
-        assert_eq!(item["time_since_update"], 2.0);
+        assert!(item.get("time_since_update").is_none());
         // No alias key when none configured.
         assert!(item.get("alias").is_none());
     }

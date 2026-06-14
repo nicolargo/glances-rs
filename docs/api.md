@@ -75,13 +75,14 @@ the plugin's stat type:
 `_levels` is alert-threshold metadata, present on every plugin but **always
 `{}`** until alerting lands (v0.3.0).
 
-**`time_since_update` is a rate-plugin field, not an envelope field.** Glances
-only emits it on the plugins that derive a rate (matching its `_manage_rate`
-decorator), and never on the instantaneous ones:
+**`time_since_update` appears only on rate plugins, always at the top level.**
+Glances emits it only on the plugins that derive a rate (matching its
+`_manage_rate` decorator), and never on the instantaneous ones. It is always a
+single value at the **top level of the envelope** — never per-item:
 
-- `cpu` — at the **top level** (object plugin).
-- `network`, `diskio` — inside **each item** under `data` (one measured
-  interval per item; collection plugins have no top-level `time_since_update`).
+- `cpu` — next to the stat fields (object plugin).
+- `network`, `diskio` — next to `data` (one value for the whole array, **not**
+  one per item).
 - `mem`, `load`, `system`, `uptime`, `fs`, `memswap` — **absent** (`fs` and the
   rest are instantaneous; `memswap`'s `sin`/`sout` are rates but Glances does
   not surface a `time_since_update` for it).
@@ -101,8 +102,8 @@ v4 shape).
 > Each example shows the plugin's **stats**; per §4 every response is wrapped
 > in the envelope — object plugins keep their fields at the top level,
 > collection plugins are nested under `data`, and both gain `_levels`.
-> `time_since_update` appears only on the rate plugins (`cpu` top-level;
-> `network`/`diskio` per item). The envelope is shown explicitly where it
+> `time_since_update` appears only on the rate plugins (`cpu`, `network`,
+> `diskio`), always at the top level. The envelope is shown explicitly where it
 > matters (the collection plugins and `uptime`).
 
 ### 5.1 `mem` — object, instantaneous
@@ -189,23 +190,23 @@ One element per interface; primary key `interface_name`:
 {
   "data": [
     {
-      "interface_name":    "eth0",
-      "bytes_recv":        511.2,
-      "bytes_sent":        1022.4,
-      "bytes_all":         1533.6,
-      "speed":             0,
-      "is_up":             true,
-      "time_since_update": 2.004
+      "interface_name": "eth0",
+      "bytes_recv":     511.2,
+      "bytes_sent":     1022.4,
+      "bytes_all":      1533.6,
+      "speed":          0,
+      "is_up":          true
     }
   ],
+  "time_since_update": 2.004,
   "_levels": {}
 }
 ```
 
 - `bytes_recv`/`bytes_sent`/`bytes_all` are **per-second rates** (bytes/s, 1
   decimal). No `_gauge`/`_rate_per_sec` companions.
-- `time_since_update` is **per item** (the measured interval used for that
-  interface's rates); there is no top-level `time_since_update`.
+- `time_since_update` is a single **top-level** value (the measured interval the
+  rates were computed over) — not repeated inside each item.
 - Interfaces filtered by the configured `show`/`hide` regexes on
   `interface_name`, applied before rate computation. **Default hide:**
   `docker.*` and `lo` (set an explicit `hide` in config to override).
@@ -322,25 +323,26 @@ One element per disk; primary key `disk_name`:
 {
   "data": [
     {
-      "disk_name":         "sda",
-      "read_count":        6.0,
-      "write_count":       20.0,
-      "read_bytes":        24576.0,
-      "write_bytes":       81920.0,
-      "time_since_update": 2.004
+      "disk_name":   "sda",
+      "read_count":  6.0,
+      "write_count": 20.0,
+      "read_bytes":  24576.0,
+      "write_bytes": 81920.0
     }
   ],
+  "time_since_update": 2.004,
   "_levels": {}
 }
 ```
 
 - `read_count`/`write_count`/`read_bytes`/`write_bytes` are **per-second
   rates** (1 decimal), diffed from the cumulative `/proc/diskstats` counters
-  over the measured interval. `*_bytes` derive from sectors × 512. A disk
-  absent from the previous sample is skipped for one cycle; a removed disk
+  over the top-level `time_since_update`. `*_bytes` derive from sectors × 512. A
+  disk absent from the previous sample is skipped for one cycle; a removed disk
   drops out immediately (§8.1).
-- `time_since_update` is **per item** (like `network`); there is no top-level
-  `time_since_update`.
+- `time_since_update` is a single **top-level** value (like `network`), not
+  repeated inside each item. **Linux only** — off Linux the `data` array is
+  empty and there is no `time_since_update`.
 - Disks are filtered by the configured `show`/`hide` regexes on `disk_name`.
   **Default hide:** `loop.*` and `/dev/loop.*`. `alias` from
   `[plugins.diskio].alias` is added **only when configured**.

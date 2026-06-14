@@ -3,8 +3,9 @@
 //!
 //! Glances v5 shape: the items live under `data`, each carrying the four
 //! counters as **plain per-second rates** (`read_count`/`write_count`/
-//! `read_bytes`/`write_bytes`) and its own `time_since_update` (rate plugin);
-//! the envelope adds `_levels`. Loop and ram devices are hidden by default.
+//! `read_bytes`/`write_bytes`), with a single top-level `time_since_update`
+//! (rate plugin) and `_levels` on the envelope. Loop and ram devices are
+//! hidden by default.
 //!
 //! Linux-only: counters come from `/proc/diskstats`. `sysinfo` exposes no
 //! per-disk I/O, so other platforms return an empty `data` array.
@@ -17,7 +18,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
-use super::{RATE_WARMUP, round1, round3};
+use super::{RATE_WARMUP, round1};
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 
@@ -98,14 +99,14 @@ impl Plugin for DiskioPlugin {
             &self.alias,
         );
         state.previous = previous;
-        envelope(Value::Array(items))
+        envelope(Value::Array(items), Some(elapsed))
     }
 
     #[cfg(not(target_os = "linux"))]
     async fn collect(&self, _state: &mut DiskioState) -> Value {
         // No per-disk I/O counters off Linux (sysinfo does not expose them):
-        // an empty list, hence no per-item time_since_update.
-        envelope(Value::Array(Vec::new()))
+        // an empty list and no measured interval, hence no time_since_update.
+        envelope(Value::Array(Vec::new()), None)
     }
 }
 
@@ -148,8 +149,6 @@ fn step(
                 "write_count": per_sec(wc.saturating_sub(pwc), elapsed),
                 "read_bytes": per_sec(rb.saturating_sub(prb), elapsed),
                 "write_bytes": per_sec(wb.saturating_sub(pwb), elapsed),
-                // Rate plugin: time_since_update is per item (Glances v5).
-                "time_since_update": round3(elapsed),
             });
             // alias only when configured for this disk (matching Glances v5).
             if let Some(a) = alias.get(name) {
@@ -196,9 +195,10 @@ mod tests {
         assert_eq!(item["write_count"], 15.0); // (230-200)/2
         assert_eq!(item["read_bytes"], 1_000.0); // (6000-4000)/2
         assert_eq!(item["write_bytes"], 500.0); // (9000-8000)/2
-        // No gauge / rate_per_sec in v5, but a per-item time_since_update.
+        // No gauge / rate_per_sec / per-item time_since_update in v5
+        // (time_since_update lives once at the envelope top level).
         assert!(item.get("read_count_gauge").is_none());
-        assert_eq!(item["time_since_update"], 2.0);
+        assert!(item.get("time_since_update").is_none());
         // No alias key when none configured.
         assert!(item.get("alias").is_none());
     }

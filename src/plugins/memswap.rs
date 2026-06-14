@@ -95,6 +95,7 @@ impl Plugin for MemSwapPlugin {
         let Some(s) = super::linux::read_swap() else {
             return envelope(
                 json!({ "total": 0, "used": 0, "free": 0, "percent": 0.0, "sin": 0.0, "sout": 0.0 }),
+                None,
             );
         };
         let (sin, sout) = match state.prev {
@@ -102,14 +103,17 @@ impl Plugin for MemSwapPlugin {
             None => (0.0, 0.0),
         };
         state.prev = Some((s.sin, s.sout));
-        envelope(json!({
-            "total": s.total,
-            "used": s.used,
-            "free": s.free,
-            "percent": s.percent,
-            "sin": sin,
-            "sout": sout,
-        }))
+        envelope(
+            json!({
+                "total": s.total,
+                "used": s.used,
+                "free": s.free,
+                "percent": s.percent,
+                "sin": sin,
+                "sout": sout,
+            }),
+            None,
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -124,12 +128,15 @@ impl Plugin for MemSwapPlugin {
             round1(used as f64 / total as f64 * 100.0)
         };
         // No sin/sout off Linux: sysinfo does not expose the swap counters.
-        envelope(json!({
-            "total": total,
-            "used": used,
-            "free": free,
-            "percent": percent,
-        }))
+        envelope(
+            json!({
+                "total": total,
+                "used": used,
+                "free": free,
+                "percent": percent,
+            }),
+            None,
+        )
     }
 }
 

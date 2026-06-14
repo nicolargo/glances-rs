@@ -53,19 +53,23 @@ impl Plugin for MemPlugin {
             // /proc/meminfo unreadable — degrade to the minimal subset.
             return envelope(
                 json!({ "total": 0, "available": 0, "percent": 0.0, "used": 0, "free": 0 }),
+                None,
             );
         };
-        envelope(json!({
-            "total": m.total,
-            "available": m.available,
-            "percent": m.percent,
-            "used": m.used,
-            "free": m.free,
-            "active": m.active,
-            "inactive": m.inactive,
-            "buffers": m.buffers,
-            "cached": m.cached,
-        }))
+        envelope(
+            json!({
+                "total": m.total,
+                "available": m.available,
+                "percent": m.percent,
+                "used": m.used,
+                "free": m.free,
+                "active": m.active,
+                "inactive": m.inactive,
+                "buffers": m.buffers,
+                "cached": m.cached,
+            }),
+            None,
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -79,13 +83,16 @@ impl Plugin for MemPlugin {
             // The Glances formula: (total - available) / total.
             round1(total.saturating_sub(available) as f64 / total as f64 * 100.0)
         };
-        envelope(json!({
-            "total": total,
-            "available": available,
-            "percent": percent,
-            "used": state.sys.used_memory(),
-            "free": state.sys.free_memory(),
-        }))
+        envelope(
+            json!({
+                "total": total,
+                "available": available,
+                "percent": percent,
+                "used": state.sys.used_memory(),
+                "free": state.sys.free_memory(),
+            }),
+            None,
+        )
     }
 }
 

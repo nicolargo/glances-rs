@@ -38,7 +38,7 @@ impl Plugin for UptimePlugin {
     }
 
     async fn collect(&self, _state: &mut UptimeState) -> Value {
-        envelope(json!({ "seconds": System::uptime() }))
+        envelope(json!({ "seconds": System::uptime() }), None)
     }
 }
 
