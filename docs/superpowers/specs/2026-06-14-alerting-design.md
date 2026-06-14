@@ -150,33 +150,35 @@ public view returned by `/api/5/alert` (never a raw internal struct — §7).
 ### 4.3 `_levels` in the envelope
 
 **`_levels` is always top-level in the envelope** (never inside `data` items).
-Verified against `alerts_v5.py::_observations` on develop-v5, which reads
-`payload["_levels"]`: scalar and collection plugins differ only in the nesting
-depth. Each leaf entry is `{ "level": <str> }`; `prominent` is optional and
-defaults to `true` when absent — glances-rs **omits** it (no prominence config
-in v0.3.0, §10).
+Verified against `alerts_v5.py::_observations` and
+`base_v5.py::_compute_levels_for_item` on develop-v5: scalar and collection
+plugins differ only in the nesting depth. Each leaf entry is
+`{ "level": <str>, "prominent": <bool> }`. `prominent` is a **static per-field
+property** (§4.6), not config — it must be emitted to match Glances
+byte-for-byte (the renderer uses it for highlight mode); it is *not* omitted.
 
 - **Scalar plugins** (`cpu`, `mem`, `load`, `system`, `uptime`, `memswap`):
   keyed by field name —
   ```json
-  "_levels": { "percent": { "level": "careful" } }
+  "_levels": { "percent": { "level": "careful", "prominent": true } }
   ```
-  Emitted for every field that has a configured threshold, including the `ok`
-  level (so a client sees the field return to `ok`). Fields with no configured
-  threshold are absent from `_levels`.
+  Emitted for every **alertable** field (§4.6) that has a configured threshold,
+  including the `ok` level (so a client sees the field return to `ok`). Fields
+  that are not alertable, or alertable with no configured threshold, are absent
+  from `_levels`.
 - **Collection plugins** (`network`, `fs`, `diskio`): keyed by the
   **stringified primary-key value**, then field name —
   ```json
   "_levels": {
-    "/":     { "percent": { "level": "critical" } },
-    "/home": { "percent": { "level": "ok" } }
+    "/":     { "percent": { "level": "critical", "prominent": false } },
+    "/home": { "percent": { "level": "ok",       "prominent": false } }
   }
   ```
-  i.e. `_levels[str(pk_value)][field] = { "level": <str> }`. `_observations`
-  joins these back to `payload["data"]` items via `plugin._primary_key` — in
-  glances-rs the pk field is `PluginId::key_field()` (§4.1). Only items present
-  in the current sample, and only fields with a configured threshold (global or
-  per-item, §4.5), appear.
+  i.e. `_levels[str(pk_value)][field] = { "level": <str>, "prominent": <bool> }`.
+  `_observations` joins these back to `payload["data"]` items via
+  `plugin._primary_key` — in glances-rs the pk field is `PluginId::key_field()`
+  (§4.1). Only items present in the current sample, and only alertable fields
+  with a configured threshold (global or per-item, §4.5), appear.
 
 `envelope()` produces the `_levels: {}` placeholder as today; the loop's
 `observe` step rebuilds it **fresh from the current sample each cycle** and
@@ -259,15 +261,61 @@ closed at startup with a clear message (reuse the existing `validate()`
 pattern). `history_size ≥ 1`; `min_duration_seconds ≥ 0` for both the global
 `[alerts]` value and any per-plugin `[plugins.<name>]` override.
 
+### 4.6 Alertable-field metadata (the "watched" set)
+
+In Glances v5 only fields flagged `watched: True` in `fields_description`
+produce `_levels`; each such field also declares a static `prominent` flag and,
+for rates, a `normalize_by` divisor and `watch_direction`. glances-rs mirrors
+this with a small **static per-plugin table** — the alertable allow-list — that
+the `observe` step consults:
+
+```rust
+struct AlertField {
+    field: &'static str,         // e.g. "percent", "bytes_recv"
+    prominent: bool,             // replicated from Glances (mem.percent=true,
+                                 //   fs.percent=false, network.*=false, …)
+    normalize_by: Option<&'static str>, // divisor field, or None for direct compare
+}
+// watch_direction is "high" for every v0.3.0 field — not represented yet (§10).
+fn alert_fields(id: PluginId) -> &'static [AlertField];
+```
+
+Only fields in this table emit `_levels`, and only when a threshold is
+configured (we ship **no** `default_thresholds`, §1 — the conservatism
+divergence from Glances, whose schema ships defaults). The `prominent` values
+are copied verbatim from the develop-v5 schemas for UI parity. The exact
+per-plugin allow-list is enumerated during implementation against develop-v5;
+the headline fields: `mem.percent` (prominent true), `fs.percent` (false),
+`cpu` load fields, `load.min1/5/15`, `network.bytes_recv/bytes_sent`
+(normalize_by, false) + `errors_in/out` (false), `memswap.percent`,
+`diskio.read_bytes/write_bytes`.
+
+**`normalize_by` (chosen in-scope for v0.3.0).** When a field declares a
+divisor, the level is computed against `value / divisor`; if the divisor is
+absent, `0`, or non-finite, the level entry is **skipped** (no `_levels` entry,
+no event) — exactly Glances' "unknown link speed" semantics. This requires the
+**`network` plugin to expose a new field** `bytes_speed_rate_per_sec` =
+`speed_mbits × 1e6 / 8 / 2` (Mbit/s → bytes/s, full-duplex per-direction
+split), `0` when unknown. Source: `/sys/class/net/<iface>/speed` on Linux
+(degrade to `0` off-Linux / virtual / down interfaces). This is a
+**payload-parity addition** to `network` (docs/api.md §5.4), independent of the
+alert path but required by it. Thresholds for normalized fields are **ratios in
+[0, 1]** (e.g. `bytes_recv.warning = 0.8` = 80 % of per-direction capacity),
+unlike the direct percentage thresholds of `mem`/`fs`.
+
 ## 5. Lazy-model decisions
 
 ### 5.1 Level computation
 
 `level(value)` = highest breached limit among the **effective** subset for
 that `(item, field)` (resolved per §4.5: item-specific over global, per-limit),
-`critical` > `warning` > `careful`, else `ok`. Compared directly to the field
-value (glances-rs fields are already the percentages/counters Glances compares;
-no percent-of-max indirection in v0.3.0).
+`critical` > `warning` > `careful`, else `ok`, with `watch_direction = "high"`
+(the only direction in v0.3.0 — every alertable field alerts on high values).
+The compared quantity is the field value directly for most fields, or
+`value / divisor` when the field declares `normalize_by` (§4.6); a missing or
+zero divisor **skips** the field (no entry). Direct fields are already the
+percentages/counters Glances compares; normalized fields compare a ratio in
+`[0, 1]` against ratio thresholds.
 
 **Raw level vs. debounced events.** This is the value written into `_levels`
 — the **raw, instantaneous** level, recomputed every cycle. The `min_duration`
@@ -325,11 +373,18 @@ needed (unlike `/api/5/config`, which is why that route stays deferred).
 
 ## 8. Tests
 
-- **`alerts.rs` unit tests**: level computation per limit subset; `_reconcile`
-  hysteresis (no commit before `min_duration`, commit after, return-to-ok
-  event, `is_initial` only on first commit); idle-gap reset; history bounded
-  at `history_size` (ring eviction); §6 stale-key pruning for collection
-  items.
+- **`alerts.rs` unit tests**: level computation per limit subset and
+  `watch_direction = high`; `normalize_by` transform (`value / divisor`) and
+  **skip** when the divisor is absent / `0` / non-finite; only alertable
+  (`watched`) fields emit `_levels`, each with its static `prominent` flag
+  (`mem.percent` true, `fs.percent` false); `_reconcile` hysteresis (no commit
+  before `min_duration`, commit after, return-to-ok event, `is_initial` only on
+  first commit); idle-gap reset; history bounded at `history_size` (ring
+  eviction); §6 stale-key pruning for collection items.
+- **`network` plugin**: `bytes_speed_rate_per_sec` = `speed_mbits × 1e6 / 8 / 2`
+  from a captured `/sys/class/net/<iface>/speed` sample; `0` when speed is
+  absent / `-1` (virtual or down interface), which then skips the rate fields'
+  levels.
 - **Config**: thresholds parse (scalar `thresholds` and collection
   `thresholds_by_item`); **two-level resolution** — a per-item override sets
   only `critical` and inherits `careful`/`warning` from global (per-limit
@@ -350,14 +405,21 @@ thresholds)** RSS/CPU must be indistinguishable from v0.2.0 — the alert path
 early-returns. A separate run with thresholds on every plugin measures the
 worst-case overhead (per-cycle field walk + bounded history). Both recorded in
 a `docs/footprint-audit-v0.3.0.md`, the Phase 9 pattern. Any regression on the
-default-config axis is a blocker.
+default-config axis is a blocker — **except** the one unconditional addition:
+`network` now reads `/sys/class/net/<iface>/speed` each cycle for
+`bytes_speed_rate_per_sec` (a payload field, collected regardless of alert
+config). Measure and record that delta separately; it should be a single small
+`/sys` read per interface per cycle (cache the parse if it shows up).
 
 ## 10. Out of scope (restated)
 
-Per-field/per-level/per-item `min_duration` overrides; built-in default
-thresholds; `prominent`/visibility config
-(events default `prominent = true`); `/api/5/<plugin>/info`, `sensors`,
-`/api/5/config`, JWT/Bearer, in-binary TLS.
+Per-field/per-level/per-item `min_duration` overrides; built-in
+`default_thresholds` (config-only — the §1 conservatism divergence);
+`watch_direction = "low"` and categorical (set-membership) thresholds — every
+v0.3.0 alertable field is numeric, direction `high`; operator-configurable
+`prominent` (the flag is static per field, copied from Glances — not a config
+key); `/api/5/<plugin>/info`, `sensors`, `/api/5/config`, JWT/Bearer, in-binary
+TLS.
 
 ## 11. Authoritative-doc updates this entails
 
@@ -365,7 +427,9 @@ thresholds; `prominent`/visibility config
   primitives); resolve the §8.1 "when alerting is added later" note; record
   the idle-gap divergence.
 - `docs/api.md`: `/api/5/alert` route + payload; `_levels` shape (top-level
-  for both; scalar keyed by field, collection keyed by `str(pk)` then field —
-  §4.3) frozen against develop-v5; the §6.2-style lazy divergence note.
+  for both; scalar keyed by field, collection keyed by `str(pk)` then field;
+  leaf `{ "level", "prominent" }` — §4.3/§4.6) frozen against develop-v5; the
+  new `network.bytes_speed_rate_per_sec` field in §5.4; the §6.2-style lazy
+  divergence note.
 - `DEVELOPMENT_PLAN.md`: open the v0.3.0 phase; move alerting out of
-  "deferred".
+  "deferred"; note the `network` payload-parity addition.
