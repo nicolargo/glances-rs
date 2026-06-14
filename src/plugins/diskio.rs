@@ -1,48 +1,74 @@
 //! `diskio` plugin — rate **and** collection: one item per disk, primary key
-//! `disk_name` (§8.1), read/write counters diffed into rates. Payload:
-//! docs/api.md §5.9.
+//! `disk_name` (§8.1). Payload: docs/api.md §5.9.
 //!
-//! Linux-only: the counters come from `/proc/diskstats`. `sysinfo` exposes no
-//! per-disk I/O, so other platforms return an empty array (degraded). The four
-//! core counters (`read_count`/`write_count`/`read_bytes`/`write_bytes`) follow
-//! the §4 rate convention; Glances' `read_time`/`write_time`/latency fields are
-//! omitted (kept lean — they can be added later).
+//! Glances v5 shape: the items live under `data`, each carrying the four
+//! counters as **plain per-second rates** (`read_count`/`write_count`/
+//! `read_bytes`/`write_bytes`), with a single top-level `time_since_update`
+//! and `_levels`. Loop and ram devices are hidden by default.
+//!
+//! Linux-only: counters come from `/proc/diskstats`. `sysinfo` exposes no
+//! per-disk I/O, so other platforms return an empty `data` array.
 
 use super::filter::KeyFilter;
-use super::{Plugin, PluginId, RATE_WARMUP, round1, round3};
+use super::{Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+#[cfg(not(target_os = "linux"))]
+use super::Clock;
+#[cfg(target_os = "linux")]
+use super::{RATE_WARMUP, round1};
+#[cfg(target_os = "linux")]
+use std::time::Instant;
+
+/// Default `hide` when the operator configures none: virtual loop devices.
+const DEFAULT_HIDE: &[&str] = &["loop.*", "/dev/loop.*"];
 
 /// Cumulative `(read_count, write_count, read_bytes, write_bytes)`.
+#[cfg(target_os = "linux")]
 type Counters = (u64, u64, u64, u64);
 
 pub struct DiskioPlugin {
     refresh: Duration,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     filter: KeyFilter,
     /// Disk name -> operator-defined alias.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     alias: HashMap<String, String>,
 }
 
 impl DiskioPlugin {
     pub fn new(config: &Config) -> Self {
         let plugin = config.plugins.get(PluginId::Diskio.as_str());
+        let show = plugin.map(|p| p.show.clone()).unwrap_or_default();
+        let hide = default_hide(plugin.map(|p| p.hide.clone()).unwrap_or_default());
         Self {
             refresh: config.refresh_for(PluginId::Diskio.as_str()),
-            filter: KeyFilter::new(
-                plugin.map(|p| p.show.as_slice()).unwrap_or_default(),
-                plugin.map(|p| p.hide.as_slice()).unwrap_or_default(),
-            ),
+            filter: KeyFilter::new(&show, &hide),
             alias: plugin.map(|p| p.alias.clone()).unwrap_or_default(),
         }
     }
 }
 
+/// The operator's `hide` list, or the plugin defaults when they set none.
+fn default_hide(user_hide: Vec<String>) -> Vec<String> {
+    if user_hide.is_empty() {
+        DEFAULT_HIDE.iter().map(|s| (*s).to_string()).collect()
+    } else {
+        user_hide
+    }
+}
+
 #[derive(Default)]
 pub struct DiskioState {
+    #[cfg(target_os = "linux")]
     previous: HashMap<String, Counters>,
+    #[cfg(target_os = "linux")]
     last: Option<Instant>,
+    #[cfg(not(target_os = "linux"))]
+    clock: Clock,
 }
 
 #[async_trait::async_trait]
@@ -82,13 +108,13 @@ impl Plugin for DiskioPlugin {
             &self.alias,
         );
         state.previous = previous;
-        Value::Array(items)
+        envelope(Value::Array(items), elapsed)
     }
 
     #[cfg(not(target_os = "linux"))]
-    async fn collect(&self, _state: &mut DiskioState) -> Value {
+    async fn collect(&self, state: &mut DiskioState) -> Value {
         // No per-disk I/O counters off Linux (sysinfo does not expose them).
-        Value::Array(Vec::new())
+        envelope(Value::Array(Vec::new()), state.clock.tick())
     }
 }
 
@@ -111,6 +137,7 @@ impl DiskioPlugin {
 /// new. Merging would let removed disks accumulate in `previous` forever: a
 /// slow memory leak (§8.1). A disk gone from the current sample drops out of
 /// both the output and the state in the same cycle.
+#[cfg(target_os = "linux")]
 fn step(
     previous: HashMap<String, Counters>,
     current: HashMap<String, Counters>,
@@ -124,34 +151,26 @@ fn step(
             // gets a rate next cycle (§5.4).
             let &(prc, pwc, prb, pwb) = previous.get(name)?;
             // saturating_sub (§5.4): on reboot the new counter can be lower.
-            let read_count = rc.saturating_sub(prc);
-            let write_count = wc.saturating_sub(pwc);
-            let read_bytes = rb.saturating_sub(prb);
-            let write_bytes = wb.saturating_sub(pwb);
-            Some(json!({
+            let mut item = json!({
                 "disk_name": name,
-                "read_count": read_count,
-                "read_count_gauge": rc,
-                "read_count_rate_per_sec": per_sec(read_count, elapsed),
-                "write_count": write_count,
-                "write_count_gauge": wc,
-                "write_count_rate_per_sec": per_sec(write_count, elapsed),
-                "read_bytes": read_bytes,
-                "read_bytes_gauge": rb,
-                "read_bytes_rate_per_sec": per_sec(read_bytes, elapsed),
-                "write_bytes": write_bytes,
-                "write_bytes_gauge": wb,
-                "write_bytes_rate_per_sec": per_sec(write_bytes, elapsed),
-                // alias always present (null when unset), as for network.
-                "alias": alias.get(name).map(|a| json!(a)).unwrap_or(Value::Null),
-                "time_since_update": round3(elapsed),
-            }))
+                "read_count": per_sec(rc.saturating_sub(prc), elapsed),
+                "write_count": per_sec(wc.saturating_sub(pwc), elapsed),
+                "read_bytes": per_sec(rb.saturating_sub(prb), elapsed),
+                "write_bytes": per_sec(wb.saturating_sub(pwb), elapsed),
+            });
+            // alias only when configured for this disk (matching Glances v5).
+            if let Some(a) = alias.get(name) {
+                item["alias"] = json!(a);
+            }
+            Some(item)
         })
         .collect();
     items.sort_by(|a, b| a["disk_name"].as_str().cmp(&b["disk_name"].as_str()));
     (items, current)
 }
 
+/// Per-second rate of a counter delta over the measured interval.
+#[cfg(target_os = "linux")]
 fn per_sec(delta: u64, elapsed: f64) -> f64 {
     if elapsed > 0.0 {
         round1(delta as f64 / elapsed)
@@ -160,7 +179,7 @@ fn per_sec(delta: u64, elapsed: f64) -> f64 {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
@@ -173,22 +192,22 @@ mod tests {
     }
 
     #[test]
-    fn nominal_rate() {
+    fn nominal_rates_are_per_second() {
         let prev = counters(&[("sda", (100, 200, 4_000, 8_000))]);
         let cur = counters(&[("sda", (110, 230, 6_000, 9_000))]);
         let (items, _) = step(prev, cur, 2.0, &no_alias());
         assert_eq!(items.len(), 1);
         let item = &items[0];
         assert_eq!(item["disk_name"], "sda");
-        assert_eq!(item["read_count"], 10);
-        assert_eq!(item["read_count_gauge"], 110);
-        assert_eq!(item["read_count_rate_per_sec"], 5.0); // 10 / 2s
-        assert_eq!(item["write_count"], 30);
-        assert_eq!(item["read_bytes"], 2_000);
-        assert_eq!(item["read_bytes_rate_per_sec"], 1_000.0);
-        assert_eq!(item["write_bytes"], 1_000);
-        assert_eq!(item["time_since_update"], 2.0);
-        assert_eq!(item["alias"], Value::Null);
+        assert_eq!(item["read_count"], 5.0); // (110-100)/2
+        assert_eq!(item["write_count"], 15.0); // (230-200)/2
+        assert_eq!(item["read_bytes"], 1_000.0); // (6000-4000)/2
+        assert_eq!(item["write_bytes"], 500.0); // (9000-8000)/2
+        // No gauge / rate_per_sec / per-item time_since_update in v5.
+        assert!(item.get("read_count_gauge").is_none());
+        assert!(item.get("time_since_update").is_none());
+        // No alias key when none configured.
+        assert!(item.get("alias").is_none());
     }
 
     #[test]
@@ -196,9 +215,8 @@ mod tests {
         let prev = counters(&[("sda", (5_000, 5_000, 5_000, 5_000))]);
         let cur = counters(&[("sda", (100, 100, 100, 100))]);
         let (items, _) = step(prev, cur, 2.0, &no_alias());
-        assert_eq!(items[0]["read_count"], 0);
-        assert_eq!(items[0]["write_bytes"], 0);
-        assert_eq!(items[0]["read_bytes_rate_per_sec"], 0.0);
+        assert_eq!(items[0]["read_count"], 0.0);
+        assert_eq!(items[0]["write_bytes"], 0.0);
     }
 
     #[test]
@@ -235,6 +253,17 @@ mod tests {
             .collect();
         assert_eq!(names, ["sda", "sdb"]);
         assert_eq!(items[0]["alias"], "root-disk");
-        assert_eq!(items[1]["alias"], Value::Null);
+        assert!(items[1].get("alias").is_none());
+    }
+}
+
+#[cfg(test)]
+mod default_hide_tests {
+    use super::*;
+
+    #[test]
+    fn default_hide_used_only_when_operator_sets_none() {
+        assert_eq!(default_hide(vec![]), ["loop.*", "/dev/loop.*"]);
+        assert_eq!(default_hide(vec!["^sr".into()]), ["^sr"]);
     }
 }

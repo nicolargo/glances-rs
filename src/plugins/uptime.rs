@@ -1,11 +1,10 @@
 //! `uptime` plugin — instantaneous. Payload: docs/api.md §5.6.
 //!
-//! Unlike every other plugin, the REST payload is a **bare JSON string**, not
-//! an object: this matches what Glances v5 serializes (its uptime stat is a
-//! `str(timedelta)`). `{"seconds": N}` is the Glances *export* shape, not the
-//! REST one — keep the string for client parity.
+//! Glances v5 returns `{"seconds": <int>}` wrapped in the standard envelope
+//! (`time_since_update` + `_levels`). The earlier `str(timedelta)` string was
+//! the v4 shape; v5 serializes the integer seconds.
 
-use super::{Plugin, PluginId};
+use super::{Clock, Plugin, PluginId, envelope};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -23,23 +22,14 @@ impl UptimePlugin {
     }
 }
 
-/// Seconds since boot formatted like Python's `str(timedelta)` (the exact
-/// shape Glances emits): `"H:MM:SS"`, or `"N day[s], H:MM:SS"` past 24 h. The
-/// hour field is not zero-padded; minutes and seconds are.
-pub(crate) fn format_uptime(total_secs: u64) -> String {
-    let days = total_secs / 86_400;
-    let rem = total_secs % 86_400;
-    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
-    match days {
-        0 => format!("{h}:{m:02}:{s:02}"),
-        1 => format!("1 day, {h}:{m:02}:{s:02}"),
-        n => format!("{n} days, {h}:{m:02}:{s:02}"),
-    }
+#[derive(Default)]
+pub struct UptimeState {
+    clock: Clock,
 }
 
 #[async_trait::async_trait]
 impl Plugin for UptimePlugin {
-    type State = ();
+    type State = UptimeState;
 
     fn id(&self) -> PluginId {
         PluginId::Uptime
@@ -49,8 +39,9 @@ impl Plugin for UptimePlugin {
         self.refresh
     }
 
-    async fn collect(&self, _state: &mut ()) -> Value {
-        json!(format_uptime(System::uptime()))
+    async fn collect(&self, state: &mut UptimeState) -> Value {
+        let tsu = state.clock.tick();
+        envelope(json!({ "seconds": System::uptime() }), tsu)
     }
 }
 
@@ -58,21 +49,16 @@ impl Plugin for UptimePlugin {
 mod tests {
     use super::*;
 
-    #[test]
-    fn format_uptime_matches_python_timedelta() {
-        assert_eq!(format_uptime(0), "0:00:00");
-        assert_eq!(format_uptime(45_296), "12:34:56");
-        // 1 day, 1:15:30
-        assert_eq!(format_uptime(86_400 + 4_530), "1 day, 1:15:30");
-        // plural "days" past 48 h, with a zero clock
-        assert_eq!(format_uptime(3 * 86_400), "3 days, 0:00:00");
-    }
-
     #[tokio::test]
-    async fn collect_returns_a_clock_string() {
+    async fn collect_matches_the_v5_envelope() {
         let plugin = UptimePlugin::new(&Config::default());
-        let value = plugin.collect(&mut ()).await;
-        let s = value.as_str().expect("uptime payload is a JSON string");
-        assert!(s.contains(':'), "expected a H:MM:SS clock, got {s:?}");
+        let mut state = UptimeState::default();
+        let value = plugin.collect(&mut state).await;
+
+        let obj = value.as_object().expect("uptime payload is an object");
+        // seconds is an integer count, plus the standard envelope fields.
+        assert!(obj["seconds"].is_u64(), "seconds: {value}");
+        assert!(obj.contains_key("time_since_update"));
+        assert_eq!(obj["_levels"], json!({}));
     }
 }

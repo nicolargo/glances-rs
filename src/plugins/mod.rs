@@ -15,7 +15,8 @@ pub mod uptime;
 #[cfg(target_os = "linux")]
 pub mod linux;
 
-use std::time::Duration;
+use serde_json::{Value, json};
+use std::time::{Duration, Instant};
 
 /// Warm-up delay for rate plugins' self-bootstrap (§5.5): `sysinfo`'s
 /// minimum CPU-refresh interval (200 ms on Linux/macOS/Windows) plus a
@@ -31,6 +32,42 @@ pub(crate) fn round1(x: f64) -> f64 {
 /// Round to 3 decimals, used for `time_since_update`.
 pub(crate) fn round3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
+}
+
+/// Wrap a plugin's raw stats in the Glances v5 REST envelope: a list goes
+/// under `data`, a dict keeps its fields at the top level; both gain a
+/// top-level `time_since_update` and `_levels` (empty `{}` until alerting
+/// lands in v0.3.0). Every plugin's `collect()` returns through this.
+pub(crate) fn envelope(stats: Value, time_since_update: f64) -> Value {
+    let mut out = match stats {
+        Value::Array(items) => json!({ "data": items }),
+        other => other,
+    };
+    if let Some(map) = out.as_object_mut() {
+        map.insert("time_since_update".into(), json!(round3(time_since_update)));
+        map.insert("_levels".into(), json!({}));
+    }
+    out
+}
+
+/// Inter-cycle stopwatch for `time_since_update`. Instantaneous plugins keep
+/// one to report the elapsed seconds since their previous cycle; rate plugins
+/// already measure their own interval and don't need it.
+#[derive(Default)]
+pub struct Clock {
+    last: Option<Instant>,
+}
+
+impl Clock {
+    /// Seconds since the previous tick (`0.0` on the first), advancing it.
+    pub fn tick(&mut self) -> f64 {
+        let now = Instant::now();
+        let dt = self
+            .last
+            .map_or(0.0, |l| now.duration_since(l).as_secs_f64());
+        self.last = Some(now);
+        dt
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
