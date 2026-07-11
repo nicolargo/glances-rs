@@ -50,6 +50,7 @@ impl NetworkPlugin {
 struct IfaceMeta {
     is_up: Option<bool>,
     speed: Option<u64>,
+    bytes_speed_rate_per_sec: Option<u64>,
 }
 
 pub struct NetworkState {
@@ -140,6 +141,7 @@ fn gather_meta<'a>(names: impl Iterator<Item = &'a String>) -> HashMap<String, I
                 IfaceMeta {
                     is_up: Some(m.is_up),
                     speed: Some(m.speed),
+                    bytes_speed_rate_per_sec: Some(m.bytes_speed_rate_per_sec),
                 },
             )
         })
@@ -192,6 +194,9 @@ fn step(
                 }
                 if let Some(speed) = m.speed {
                     item["speed"] = json!(speed);
+                }
+                if let Some(cap) = m.bytes_speed_rate_per_sec {
+                    item["bytes_speed_rate_per_sec"] = json!(cap);
                 }
             }
             Some(item)
@@ -305,12 +310,14 @@ mod tests {
             IfaceMeta {
                 is_up: Some(true),
                 speed: Some(1_048_576_000),
+                bytes_speed_rate_per_sec: Some(62_500_000),
             },
         )]);
         let alias = HashMap::from([("eth0".to_string(), "LAN".to_string())]);
         let (items, _) = step(prev, cur, 1.0, &meta, &alias);
         assert_eq!(items[0]["is_up"], true);
         assert_eq!(items[0]["speed"], 1_048_576_000u64);
+        assert_eq!(items[0]["bytes_speed_rate_per_sec"], 62_500_000u64);
         assert_eq!(items[0]["alias"], "LAN");
     }
 }
