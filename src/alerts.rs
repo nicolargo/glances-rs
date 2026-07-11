@@ -96,6 +96,55 @@ pub(crate) fn resolve(
     }
 }
 
+/// One alertable field's static metadata (spec §4.6). `prominent` is copied
+/// verbatim from Glances v5 for UI parity; `direction` is `High` for every
+/// v0.3.0 field; `normalize_by` names a divisor field for rate-vs-capacity
+/// comparison (network only).
+pub(crate) struct AlertField {
+    pub field: &'static str,
+    pub prominent: bool,
+    pub direction: Direction,
+    pub normalize_by: Option<&'static str>,
+}
+
+const fn af(field: &'static str, prominent: bool) -> AlertField {
+    AlertField { field, prominent, direction: Direction::High, normalize_by: None }
+}
+
+const MEM_FIELDS: &[AlertField] = &[af("percent", true)];
+const FS_FIELDS: &[AlertField] = &[af("percent", false)];
+const LOAD_FIELDS: &[AlertField] = &[af("min5", false), af("min15", true)];
+const MEMSWAP_FIELDS: &[AlertField] = &[af("percent", true), af("sin", false), af("sout", false)];
+const DISKIO_FIELDS: &[AlertField] = &[af("read_bytes", false), af("write_bytes", false)];
+const CPU_FIELDS: &[AlertField] = &[
+    af("total", true),
+    af("system", false),
+    af("user", false),
+    af("iowait", false),
+    af("steal", true),
+    af("ctx_switches", true),
+];
+const NETWORK_FIELDS: &[AlertField] = &[
+    AlertField { field: "bytes_recv", prominent: false, direction: Direction::High, normalize_by: Some("bytes_speed_rate_per_sec") },
+    AlertField { field: "bytes_sent", prominent: false, direction: Direction::High, normalize_by: Some("bytes_speed_rate_per_sec") },
+];
+const EMPTY_FIELDS: &[AlertField] = &[];
+
+/// Alertable fields per plugin. Only these emit `_levels`, and only when a
+/// threshold is configured (spec §4.6). Empty slice = nothing to alert on.
+pub(crate) fn alert_fields(id: PluginId) -> &'static [AlertField] {
+    match id {
+        PluginId::Mem => MEM_FIELDS,
+        PluginId::Fs => FS_FIELDS,
+        PluginId::Load => LOAD_FIELDS,
+        PluginId::MemSwap => MEMSWAP_FIELDS,
+        PluginId::Diskio => DISKIO_FIELDS,
+        PluginId::Cpu => CPU_FIELDS,
+        PluginId::Network => NETWORK_FIELDS,
+        PluginId::System | PluginId::Uptime => EMPTY_FIELDS,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +211,26 @@ mod tests {
         assert_eq!(e2.critical, None);
         // unconfigured field -> None (no _levels entry).
         assert!(resolve(&config, PluginId::Fs, Some("/"), "size").is_none());
+    }
+
+    #[test]
+    fn alert_fields_match_emitted_payload_fields() {
+        // Spot-check the static table against the spec §4.6 prominent values.
+        let mem = alert_fields(PluginId::Mem);
+        assert_eq!(mem.len(), 1);
+        assert_eq!(mem[0].field, "percent");
+        assert!(mem[0].prominent);
+
+        let fs = alert_fields(PluginId::Fs);
+        assert_eq!(fs[0].field, "percent");
+        assert!(!fs[0].prominent);
+
+        let net = alert_fields(PluginId::Network);
+        assert!(net.iter().all(|f| f.normalize_by == Some("bytes_speed_rate_per_sec")));
+        assert!(net.iter().any(|f| f.field == "bytes_recv"));
+
+        // scalar/no-numeric plugins have no alertable fields.
+        assert!(alert_fields(PluginId::System).is_empty());
+        assert!(alert_fields(PluginId::Uptime).is_empty());
     }
 }

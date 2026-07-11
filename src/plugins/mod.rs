@@ -126,6 +126,18 @@ impl PluginId {
             _ => None,
         }
     }
+
+    /// The primary-key field name for a collection plugin's items, used to
+    /// index per-item `_levels` and the alert hysteresis state (§4.1).
+    /// `None` for scalar plugins.
+    pub fn key_field(self) -> Option<&'static str> {
+        match self {
+            PluginId::Network => Some("interface_name"),
+            PluginId::Fs => Some("mnt_point"),
+            PluginId::Diskio => Some("disk_name"),
+            _ => None,
+        }
+    }
 }
 
 /// One collectable metric source (§5.3). Implementations are stateless
@@ -165,5 +177,14 @@ mod tests {
         assert_eq!(PluginId::parse(""), None);
         // "all" is the aggregate route, not a plugin name.
         assert_eq!(PluginId::parse("all"), None);
+    }
+
+    #[test]
+    fn key_field_only_for_collection_plugins() {
+        assert_eq!(PluginId::Fs.key_field(), Some("mnt_point"));
+        assert_eq!(PluginId::Network.key_field(), Some("interface_name"));
+        assert_eq!(PluginId::Diskio.key_field(), Some("disk_name"));
+        assert_eq!(PluginId::Mem.key_field(), None);
+        assert_eq!(PluginId::Uptime.key_field(), None);
     }
 }
