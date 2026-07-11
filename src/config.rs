@@ -247,6 +247,44 @@ impl Config {
                     }
                 }
             }
+            // Each declared threshold block must be internally ordered.
+            for (field, t) in &plugin.thresholds {
+                check_threshold_order(name, field, t)?;
+            }
+            // The merged global+item effective set must also be ordered:
+            // a partial per-item override can otherwise invert the ladder.
+            for (item, fields) in &plugin.thresholds_by_item {
+                for (field, specific) in fields {
+                    check_threshold_order(name, &format!("{item}/{field}"), specific)?;
+                    let global = plugin.thresholds.get(field);
+                    let merged = Thresholds {
+                        careful: specific.careful.or(global.and_then(|g| g.careful)),
+                        warning: specific.warning.or(global.and_then(|g| g.warning)),
+                        critical: specific.critical.or(global.and_then(|g| g.critical)),
+                    };
+                    check_threshold_order(name, &format!("{item}/{field} (merged)"), &merged)?;
+                }
+            }
+            if let Some(md) = plugin.min_duration_seconds
+                && !(md.is_finite() && md >= 0.0)
+            {
+                return Err(ConfigError::Invalid(format!(
+                    "plugins.{name}.min_duration_seconds must be >= 0, got {md}"
+                )));
+            }
+        }
+        if self.alerts.history_size == 0 {
+            return Err(ConfigError::Invalid(
+                "alerts.history_size must be at least 1".into(),
+            ));
+        }
+        if !(self.alerts.min_duration_seconds.is_finite()
+            && self.alerts.min_duration_seconds >= 0.0)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "alerts.min_duration_seconds must be >= 0, got {}",
+                self.alerts.min_duration_seconds
+            )));
         }
         Ok(())
     }
@@ -367,6 +405,31 @@ where
         }
     }
     Ok(out)
+}
+
+/// Reject a threshold ladder that is not `careful <= warning <= critical`
+/// for whichever subset of the three limits is present.
+fn check_threshold_order(plugin: &str, field: &str, t: &Thresholds) -> Result<(), ConfigError> {
+    let ordered = |lo: Option<f64>, hi: Option<f64>| match (lo, hi) {
+        (Some(a), Some(b)) => a <= b,
+        _ => true,
+    };
+    let finite = |v: Option<f64>| v.is_none_or(|x| x.is_finite());
+    if !(finite(t.careful) && finite(t.warning) && finite(t.critical)) {
+        return Err(ConfigError::Invalid(format!(
+            "plugins.{plugin}.thresholds.{field}: limits must be finite numbers"
+        )));
+    }
+    if ordered(t.careful, t.warning)
+        && ordered(t.warning, t.critical)
+        && ordered(t.careful, t.critical)
+    {
+        Ok(())
+    } else {
+        Err(ConfigError::Invalid(format!(
+            "plugins.{plugin}.thresholds.{field}: limits must satisfy careful <= warning <= critical"
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -595,11 +658,43 @@ mod tests {
         assert_eq!(d.alerts.history_size, 200);
         assert_eq!(d.alerts.min_duration_seconds, 5.0);
 
-        let c = Config::from_toml(
-            "[alerts]\nhistory_size = 50\nmin_duration_seconds = 2.5\n",
-        )
-        .unwrap();
+        let c =
+            Config::from_toml("[alerts]\nhistory_size = 50\nmin_duration_seconds = 2.5\n").unwrap();
         assert_eq!(c.alerts.history_size, 50);
         assert_eq!(c.alerts.min_duration_seconds, 2.5);
+    }
+
+    #[test]
+    fn rejects_out_of_order_threshold_block() {
+        let err =
+            Config::from_toml("[plugins.mem.thresholds.percent]\ncareful = 90.0\nwarning = 70.0\n");
+        assert!(err.is_err(), "careful > warning must be rejected");
+    }
+
+    #[test]
+    fn rejects_out_of_order_merged_thresholds() {
+        // global careful=80; item override critical=70 -> merged careful>critical.
+        let err = Config::from_toml(
+            r#"
+            [plugins.fs.thresholds.percent]
+            careful = 80.0
+            [plugins.fs.thresholds_by_item."/".percent]
+            critical = 70.0
+            "#,
+        );
+        assert!(err.is_err(), "merged careful > critical must be rejected");
+    }
+
+    #[test]
+    fn rejects_bad_alerts_values() {
+        assert!(Config::from_toml("[alerts]\nhistory_size = 0\n").is_err());
+        assert!(Config::from_toml("[alerts]\nmin_duration_seconds = -1.0\n").is_err());
+    }
+
+    #[test]
+    fn accepts_partial_threshold_subset() {
+        // warning+critical only, correctly ordered, no careful — valid.
+        Config::from_toml("[plugins.mem.thresholds.percent]\nwarning = 80.0\ncritical = 90.0\n")
+            .unwrap();
     }
 }
