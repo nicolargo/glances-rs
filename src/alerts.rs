@@ -68,12 +68,44 @@ pub(crate) fn compute_level(value: f64, t: &Effective, dir: Direction) -> Level 
     }
 }
 
+/// Resolve the effective limits for `(plugin, item, field)`: item-specific
+/// wins over global, **per limit key** (spec §4.5). Returns `None` when no
+/// limit is configured — the field then produces no `_levels` entry.
+pub(crate) fn resolve(
+    config: &Config,
+    id: PluginId,
+    item: Option<&str>,
+    field: &str,
+) -> Option<Effective> {
+    let pc = config.plugins.get(id.as_str())?;
+    let global = pc.thresholds.get(field);
+    let specific = item
+        .and_then(|i| pc.thresholds_by_item.get(i))
+        .and_then(|m| m.get(field));
+    let pick =
+        |get: fn(&Thresholds) -> Option<f64>| specific.and_then(get).or(global.and_then(get));
+    let e = Effective {
+        careful: pick(|t| t.careful),
+        warning: pick(|t| t.warning),
+        critical: pick(|t| t.critical),
+    };
+    if e.careful.is_none() && e.warning.is_none() && e.critical.is_none() {
+        None
+    } else {
+        Some(e)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn eff(c: f64, w: f64, cr: f64) -> Effective {
-        Effective { careful: Some(c), warning: Some(w), critical: Some(cr) }
+        Effective {
+            careful: Some(c),
+            warning: Some(w),
+            critical: Some(cr),
+        }
     }
 
     #[test]
@@ -99,8 +131,36 @@ mod tests {
 
     #[test]
     fn partial_subset_only_uses_present_limits() {
-        let t = Effective { careful: None, warning: Some(80.0), critical: Some(90.0) };
+        let t = Effective {
+            careful: None,
+            warning: Some(80.0),
+            critical: Some(90.0),
+        };
         assert_eq!(compute_level(85.0, &t, Direction::High), Level::Warning);
         assert_eq!(compute_level(50.0, &t, Direction::High), Level::Ok);
+    }
+
+    #[test]
+    fn resolve_merges_item_over_global_per_limit() {
+        let config = Config::from_toml(
+            r#"
+            [plugins.fs.thresholds.percent]
+            careful = 70.0
+            warning = 80.0
+            [plugins.fs.thresholds_by_item."/".percent]
+            critical = 95.0
+            "#,
+        )
+        .unwrap();
+        // item "/" inherits careful+warning from global, adds critical.
+        let e = resolve(&config, PluginId::Fs, Some("/"), "percent").unwrap();
+        assert_eq!(e.careful, Some(70.0));
+        assert_eq!(e.warning, Some(80.0));
+        assert_eq!(e.critical, Some(95.0));
+        // item "/home" (no override) sees global only, critical unset.
+        let e2 = resolve(&config, PluginId::Fs, Some("/home"), "percent").unwrap();
+        assert_eq!(e2.critical, None);
+        // unconfigured field -> None (no _levels entry).
+        assert!(resolve(&config, PluginId::Fs, Some("/"), "size").is_none());
     }
 }
