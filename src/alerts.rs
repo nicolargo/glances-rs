@@ -108,7 +108,12 @@ pub(crate) struct AlertField {
 }
 
 const fn af(field: &'static str, prominent: bool) -> AlertField {
-    AlertField { field, prominent, direction: Direction::High, normalize_by: None }
+    AlertField {
+        field,
+        prominent,
+        direction: Direction::High,
+        normalize_by: None,
+    }
 }
 
 const MEM_FIELDS: &[AlertField] = &[af("percent", true)];
@@ -125,8 +130,18 @@ const CPU_FIELDS: &[AlertField] = &[
     af("ctx_switches", true),
 ];
 const NETWORK_FIELDS: &[AlertField] = &[
-    AlertField { field: "bytes_recv", prominent: false, direction: Direction::High, normalize_by: Some("bytes_speed_rate_per_sec") },
-    AlertField { field: "bytes_sent", prominent: false, direction: Direction::High, normalize_by: Some("bytes_speed_rate_per_sec") },
+    AlertField {
+        field: "bytes_recv",
+        prominent: false,
+        direction: Direction::High,
+        normalize_by: Some("bytes_speed_rate_per_sec"),
+    },
+    AlertField {
+        field: "bytes_sent",
+        prominent: false,
+        direction: Direction::High,
+        normalize_by: Some("bytes_speed_rate_per_sec"),
+    },
 ];
 const EMPTY_FIELDS: &[AlertField] = &[];
 
@@ -226,7 +241,10 @@ mod tests {
         assert!(!fs[0].prominent);
 
         let net = alert_fields(PluginId::Network);
-        assert!(net.iter().all(|f| f.normalize_by == Some("bytes_speed_rate_per_sec")));
+        assert!(
+            net.iter()
+                .all(|f| f.normalize_by == Some("bytes_speed_rate_per_sec"))
+        );
         assert!(net.iter().any(|f| f.field == "bytes_recv"));
 
         // scalar/no-numeric plugins have no alertable fields.
