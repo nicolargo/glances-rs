@@ -4,6 +4,7 @@
 //! Design rationale lives in `ARCHITECTURE.md`; the implementation roadmap
 //! in `DEVELOPMENT_PLAN.md`; the frozen API contract in `docs/api.md`.
 
+pub mod alerts;
 pub mod api;
 pub mod collector;
 pub mod config;
