@@ -198,6 +198,16 @@ pub struct IfaceMeta {
     /// Link speed in bits per second, 0 when unknown (Glances multiplies
     /// the Mbps value reported by the kernel by 1048576).
     pub speed: u64,
+    /// Per-direction bandwidth capacity in bytes/s for `normalize_by` (spec
+    /// §4.6): `mbps * 1e6 / 8 / 2`. `0` when the link speed is unknown.
+    pub bytes_speed_rate_per_sec: u64,
+}
+
+/// Decimal-Mbit per-direction byte capacity, matching Glances v5's
+/// `bytes_speed_rate_per_sec`. Note this uses 1e6 (not the 1_048_576 of the
+/// `speed` field) — Glances deliberately scales the two fields differently.
+pub(crate) fn speed_capacity_bytes_per_dir(mbps: u64) -> u64 {
+    mbps * 1_000_000 / 8 / 2
 }
 
 pub fn read_iface_meta(name: &str) -> IfaceMeta {
@@ -209,13 +219,19 @@ pub fn read_iface_meta(name: &str) -> IfaceMeta {
         .map(|flags| flags & 0x1 != 0)
         .unwrap_or(false);
     // `/sys` speed is Mbps; -1 or an error means unknown -> 0.
-    let speed = std::fs::read_to_string(format!("{base}/speed"))
+    let mbps = std::fs::read_to_string(format!("{base}/speed"))
         .ok()
         .and_then(|s| s.trim().parse::<i64>().ok())
         .filter(|&mbps| mbps > 0)
-        .map(|mbps| mbps as u64 * 1_048_576)
+        .map(|mbps| mbps as u64)
         .unwrap_or(0);
-    IfaceMeta { is_up, speed }
+    let speed = mbps * 1_048_576;
+    let bytes_speed_rate_per_sec = speed_capacity_bytes_per_dir(mbps);
+    IfaceMeta {
+        is_up,
+        speed,
+        bytes_speed_rate_per_sec,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -511,5 +527,13 @@ ID=ubuntu
     fn parse_os_release_tolerates_unquoted_and_missing_fields() {
         assert_eq!(parse_os_release("NAME=Arch\n"), "Arch");
         assert_eq!(parse_os_release(""), "");
+    }
+
+    #[test]
+    fn bytes_speed_rate_per_sec_is_decimal_per_direction() {
+        // 1000 Mbit/s full-duplex -> 1000 * 1e6 / 8 / 2 = 62_500_000 B/s per dir.
+        assert_eq!(super::speed_capacity_bytes_per_dir(1000), 62_500_000);
+        // unknown / down link -> 0.
+        assert_eq!(super::speed_capacity_bytes_per_dir(0), 0);
     }
 }
