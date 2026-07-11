@@ -130,7 +130,11 @@ pub async fn plugin_loop<P: Plugin>(plugin: P, app: Arc<AppState>, ready: watch:
 
     tracing::debug!(plugin = id.as_str(), "collector started");
     loop {
-        let value = plugin.collect(&mut state).await;
+        let mut value = plugin.collect(&mut state).await;
+        // Compute _levels and journal alert transitions before publishing,
+        // so the stored snapshot carries decoration and /api/5/alert sees
+        // every cycle (spec §3.1, §4.1).
+        app.alerts.observe(&app.config, id, &mut value);
         app.publish(id, value).await;
         ready.send_replace(true);
 
