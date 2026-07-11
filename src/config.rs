@@ -124,6 +124,17 @@ impl Default for CollectConfig {
     }
 }
 
+/// Per-field alert limits. Any subset may be set; an unset limit means
+/// "no threshold at that level" (spec §4.5). Compared to the field value
+/// directly, or to `value / divisor` for `normalize_by` fields (alerts.rs).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Thresholds {
+    pub careful: Option<f64>,
+    pub warning: Option<f64>,
+    pub critical: Option<f64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PluginConfig {
@@ -138,6 +149,15 @@ pub struct PluginConfig {
     /// Item primary key -> display alias (collection plugins, e.g. network
     /// interface names). Empty by default; surfaced verbatim in the payload.
     pub alias: HashMap<String, String>,
+    /// Global per-field alert thresholds, keyed by field name. Applies to
+    /// every item of a collection plugin (spec §4.5).
+    pub thresholds: HashMap<String, Thresholds>,
+    /// Per-item threshold overrides: item primary key -> field -> limits.
+    /// Merged over `thresholds` per limit key (spec §4.5).
+    pub thresholds_by_item: HashMap<String, HashMap<String, Thresholds>>,
+    /// Per-plugin hysteresis window override; uniform over all items
+    /// (spec §5.3). `None` falls back to `[alerts].min_duration_seconds`.
+    pub min_duration_seconds: Option<f64>,
 }
 
 impl Config {
@@ -522,5 +542,30 @@ mod tests {
         assert!(args(&["-V"]).unwrap().version);
         assert!(args(&["--config"]).is_err());
         assert!(args(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn parses_two_level_thresholds_and_min_duration() {
+        let c = Config::from_toml(
+            r#"
+            [plugins.fs.thresholds.percent]
+            careful = 70.0
+            warning = 80.0
+            critical = 90.0
+
+            [plugins.fs.thresholds_by_item."/".percent]
+            critical = 95.0
+
+            [plugins.fs]
+            min_duration_seconds = 10.0
+            "#,
+        )
+        .unwrap();
+        let fs = c.plugins.get("fs").unwrap();
+        assert_eq!(fs.thresholds["percent"].careful, Some(70.0));
+        assert_eq!(fs.thresholds["percent"].critical, Some(90.0));
+        assert_eq!(fs.thresholds_by_item["/"]["percent"].critical, Some(95.0));
+        assert_eq!(fs.thresholds_by_item["/"]["percent"].warning, None);
+        assert_eq!(fs.min_duration_seconds, Some(10.0));
     }
 }
