@@ -572,6 +572,56 @@ mod tests {
         assert_eq!(alerts.state_len(), 0);
     }
 
+    #[test]
+    fn idle_gap_reset_prevents_stale_commit() {
+        // refresh = 1ms -> idle-gap threshold (2 * refresh) = 2ms;
+        // min_duration = 5ms. Both are dwarfed by the 30ms sleep below, so
+        // the test is not flaky in either direction.
+        let config = cfg("[collect]\nrefresh = 0.001\n\
+             [alerts]\nmin_duration_seconds = 0.005\n\
+             [plugins.mem.thresholds.percent]\ncritical = 0.0\n");
+        let alerts = Alerts::for_tests("host1");
+
+        // Cycle 1: breaching payload starts a pending window; no event yet.
+        let mut p1 = json!({ "percent": 95.0, "_levels": {} });
+        alerts.observe(&config, PluginId::Mem, &mut p1);
+        assert!(alerts.history().is_empty());
+
+        // Sleep far longer than both the 2ms gap threshold and the 5ms
+        // min_duration.
+        std::thread::sleep(Duration::from_millis(30));
+
+        // Cycle 2: same breaching payload. The 30ms gap (> 2ms) triggers the
+        // idle-gap reset (§5.2), clearing the pending window and restarting
+        // it, so the level does NOT commit here. Without the reset, the
+        // 30ms-old pending window would already exceed the 5ms min_duration
+        // and wrongly commit an event -- the still-empty history proves the
+        // reset fired.
+        let mut p2 = json!({ "percent": 95.0, "_levels": {} });
+        alerts.observe(&config, PluginId::Mem, &mut p2);
+        assert!(alerts.history().is_empty());
+    }
+
+    #[test]
+    fn history_ring_evicts_oldest() {
+        let config = cfg("[alerts]\nhistory_size = 2\nmin_duration_seconds = 0.0\n\
+             [plugins.mem.thresholds.percent]\nwarning = 50.0\ncritical = 90.0\n");
+        let alerts = Alerts::for_tests("host1");
+
+        // Four distinct committed transitions: critical -> ok -> critical -> ok.
+        for percent in [95.0, 10.0, 95.0, 10.0] {
+            let mut payload = json!({ "percent": percent, "_levels": {} });
+            alerts.observe(&config, PluginId::Mem, &mut payload);
+        }
+
+        let h = alerts.history();
+        // Ring bounded to history_size even though 4 events were appended.
+        assert_eq!(h.len(), 2);
+        // Retained events are the two most recent, most-recent-last.
+        assert_eq!(h.first().unwrap()["level"], "critical");
+        assert_eq!(h.last().unwrap()["level"], "ok");
+    }
+
     fn eff(c: f64, w: f64, cr: f64) -> Effective {
         Effective {
             careful: Some(c),
