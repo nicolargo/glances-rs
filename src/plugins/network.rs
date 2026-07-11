@@ -45,7 +45,8 @@ impl NetworkPlugin {
 }
 
 /// Per-interface status. `None` fields are simply omitted from the JSON,
-/// which is how non-Linux platforms degrade (no `is_up`/`speed`).
+/// which is how non-Linux platforms degrade (no `is_up`/`speed`/
+/// `bytes_speed_rate_per_sec`).
 #[derive(Default, Clone, Copy)]
 struct IfaceMeta {
     is_up: Option<bool>,
@@ -130,7 +131,8 @@ fn sample(networks: &Networks, filter: &KeyFilter) -> HashMap<String, Counters> 
 }
 
 /// Status of each named interface. Linux reads `/sys/class/net`; other
-/// platforms return empty metadata, so `is_up`/`speed` are omitted.
+/// platforms return empty metadata, so `is_up`/`speed`/
+/// `bytes_speed_rate_per_sec` are omitted.
 #[cfg(target_os = "linux")]
 fn gather_meta<'a>(names: impl Iterator<Item = &'a String>) -> HashMap<String, IfaceMeta> {
     names

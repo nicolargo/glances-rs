@@ -36,8 +36,10 @@ pub(crate) fn round3(x: f64) -> f64 {
 
 /// Wrap a plugin's raw stats in the Glances v5 REST envelope: a list goes
 /// under `data`, a dict keeps its fields at the top level; both gain a
-/// top-level `time_since_update` and `_levels` (empty `{}` until alerting
-/// lands in v0.3.0). Every plugin's `collect()` returns through this.
+/// top-level `time_since_update` and `_levels`. `_levels` starts as `{}`
+/// here and is rewritten by `Alerts::observe` (called from the plugin loop)
+/// when thresholds are configured for this plugin. Every plugin's
+/// `collect()` returns through this.
 pub(crate) fn envelope(stats: Value, time_since_update: f64) -> Value {
     let mut out = match stats {
         Value::Array(items) => json!({ "data": items }),

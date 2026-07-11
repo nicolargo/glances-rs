@@ -312,8 +312,9 @@ One element per mounted filesystem; primary key `mnt_point`:
 - All sizes in bytes; `free` is the space available to the caller,
   `used = size - free`, `percent = used / size * 100` (1 decimal). This
   slightly overstates usage versus psutil's root-reserve-aware percent (which
-  excludes blocks reserved for root); the gap is the reserved fraction. It
-  will be revisited when alerting (v0.3.0) needs exact thresholds.
+  excludes blocks reserved for root); the gap is the reserved fraction.
+  Alerting (§8) thresholds this same approximate `percent`; the approximation
+  itself is unchanged.
 - Filesystems are filtered by the configured `show`/`hide` regexes on
   `mnt_point`. **Default hide:** `/boot.*` and `.*/snap.*`. `alias` from
   `[plugins.fs].alias` keyed by mount point is added **only when configured**.

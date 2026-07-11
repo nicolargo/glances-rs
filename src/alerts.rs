@@ -304,10 +304,27 @@ impl Alerts {
 
     /// One cycle's worth of alerting for `id`'s freshly collected `value`:
     /// rewrite `_levels` (raw, instantaneous) and append any committed level
-    /// transitions to the journal. No-op for plugins with no alertable fields.
+    /// transitions to the journal. No-op for plugins with no alertable fields,
+    /// or with no thresholds configured at all (the default).
     pub fn observe(&self, config: &Config, id: PluginId, value: &mut Value) {
         let fields = alert_fields(id);
         if fields.is_empty() {
+            return;
+        }
+        // Footprint mandate: the default config has no thresholds anywhere, and
+        // that must be a (near-)free path on every collection cycle. `config`
+        // is immutable for the life of the process, so this check is stable
+        // across calls. With no thresholds configured for this plugin,
+        // `resolve` would return `None` for every field below, so no
+        // observation, no state entry, and no event would ever be produced --
+        // bailing here changes nothing observable. Output is identical because
+        // `envelope()` already initializes `_levels` to `{}` before `observe`
+        // runs, which is exactly what the loop below would otherwise compute.
+        let has_thresholds = config
+            .plugins
+            .get(id.as_str())
+            .is_some_and(|p| !p.thresholds.is_empty() || !p.thresholds_by_item.is_empty());
+        if !has_thresholds {
             return;
         }
         let min_duration = effective_min_duration(config, id);
