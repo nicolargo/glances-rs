@@ -8,6 +8,7 @@
 //! - the active-collector registry: Tokio `Mutex` (guards only the rare
 //!   `Idle -> Active` transition).
 
+use crate::alerts::Alerts;
 use crate::config::Config;
 use crate::plugins::PluginId;
 use serde_json::Value;
@@ -31,6 +32,7 @@ pub struct AppState {
     store: RwLock<HashMap<PluginId, Value>>,
     last_request: HashMap<PluginId, AtomicI64>,
     pub(crate) collectors: Mutex<HashMap<PluginId, Collector>>,
+    pub alerts: Alerts,
 }
 
 impl AppState {
@@ -45,6 +47,7 @@ impl AppState {
             store: RwLock::new(HashMap::new()),
             last_request,
             collectors: Mutex::new(HashMap::new()),
+            alerts: Alerts::new(),
         })
     }
 
