@@ -7,6 +7,8 @@
 //! `/api/5/alert`. State lives here, not in the plugin loop's `State`, because
 //! it must survive a collector going idle and waking again (spec §3.2).
 
+use std::time::{Duration, Instant};
+
 use crate::config::{Config, Thresholds};
 use crate::plugins::PluginId;
 
@@ -66,6 +68,67 @@ pub(crate) fn compute_level(value: f64, t: &Effective, dir: Direction) -> Level 
     } else {
         Level::Ok
     }
+}
+
+/// Per-`(plugin, key, field)` hysteresis state (spec §4.1). Mirrors Glances
+/// `_AlertState`.
+#[derive(Default)]
+pub(crate) struct AlertState {
+    committed_level: Level,
+    pending_level: Option<Level>,
+    pending_since: Option<Instant>,
+    has_committed: bool,
+}
+
+/// A committed level change, the seed of an alert event.
+pub(crate) struct Transition {
+    pub previous: Level,
+    pub new: Level,
+    pub is_initial: bool,
+}
+
+/// Advance the state machine for one observation. Returns `Some` only when a
+/// transition commits — i.e. the observed level differs from the committed
+/// one and has persisted for `min_duration` (spec §2 `_reconcile`).
+pub(crate) fn reconcile(
+    state: &mut AlertState,
+    observed: Level,
+    now: Instant,
+    min_duration: Duration,
+) -> Option<Transition> {
+    if observed == state.committed_level {
+        state.pending_level = None;
+        state.pending_since = None;
+        state.has_committed = true;
+        return None;
+    }
+    let commit = |state: &mut AlertState| -> Transition {
+        let previous = state.committed_level;
+        let is_initial = !state.has_committed;
+        state.committed_level = observed;
+        state.has_committed = true;
+        state.pending_level = None;
+        state.pending_since = None;
+        Transition {
+            previous,
+            new: observed,
+            is_initial,
+        }
+    };
+    if min_duration.is_zero() {
+        return Some(commit(state));
+    }
+    if state.pending_level == Some(observed) {
+        if now.duration_since(state.pending_since.expect("set with pending_level")) >= min_duration
+        {
+            return Some(commit(state));
+        }
+        return None;
+    }
+    // Fresh debounce window for a newly-observed level.
+    state.pending_level = Some(observed);
+    state.pending_since = Some(now);
+    None
 }
 
 /// Resolve the effective limits for `(plugin, item, field)`: item-specific
@@ -250,5 +313,40 @@ mod tests {
         // scalar/no-numeric plugins have no alertable fields.
         assert!(alert_fields(PluginId::System).is_empty());
         assert!(alert_fields(PluginId::Uptime).is_empty());
+    }
+
+    #[test]
+    fn reconcile_debounces_then_commits() {
+        use std::time::{Duration, Instant};
+        let md = Duration::from_millis(50);
+        let mut s = AlertState::default();
+        let t0 = Instant::now();
+
+        // ok == committed ok: no event, marks has_committed.
+        assert!(reconcile(&mut s, Level::Ok, t0, md).is_none());
+        // first warning: starts pending, no commit yet.
+        assert!(reconcile(&mut s, Level::Warning, t0, md).is_none());
+        // same warning, before window elapses: still pending.
+        assert!(reconcile(&mut s, Level::Warning, t0 + Duration::from_millis(10), md).is_none());
+        // after window: commit -> transition ok->warning, is_initial=false
+        // (an ok was already committed first).
+        let tr = reconcile(&mut s, Level::Warning, t0 + Duration::from_millis(60), md).unwrap();
+        assert_eq!(tr.previous, Level::Ok);
+        assert_eq!(tr.new, Level::Warning);
+        assert!(!tr.is_initial);
+        // return to ok commits immediately on next persisted observation window.
+        assert!(reconcile(&mut s, Level::Ok, t0 + Duration::from_millis(60), md).is_none());
+        let back = reconcile(&mut s, Level::Ok, t0 + Duration::from_millis(120), md).unwrap();
+        assert_eq!(back.previous, Level::Warning);
+        assert_eq!(back.new, Level::Ok);
+    }
+
+    #[test]
+    fn reconcile_zero_min_duration_commits_immediately() {
+        use std::time::{Duration, Instant};
+        let mut s = AlertState::default();
+        let tr = reconcile(&mut s, Level::Critical, Instant::now(), Duration::ZERO).unwrap();
+        assert_eq!(tr.new, Level::Critical);
+        assert!(tr.is_initial); // first commit, no prior ok observed
     }
 }
