@@ -23,6 +23,7 @@ pub fn api_router(app: Arc<AppState>) -> Router {
     let routes = Router::new()
         .route("/api/5/pluginslist", get(plugins_list))
         .route("/api/5/all", get(all_stats))
+        .route("/api/5/alert", get(alert_history))
         .route("/api/5/{plugin}", get(plugin_stats))
         .with_state(app.clone());
     security::apply_security(routes, app)
@@ -67,6 +68,13 @@ async fn all_stats(State(app): State<Arc<AppState>>) -> Json<Map<String, Value>>
         }
     }
     Json(out)
+}
+
+/// `GET /api/5/alert` — the alert event journal (spec §4.4). Read-only: it
+/// never wakes or waits on a collector (like `pluginslist`), and returns `200`
+/// with a JSON array, `[]` when empty.
+async fn alert_history(State(app): State<Arc<AppState>>) -> Json<Vec<Value>> {
+    Json(app.alerts.history())
 }
 
 /// `GET /api/5/{plugin}` — single dynamic route for every plugin (§6.1).
