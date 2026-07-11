@@ -28,3 +28,6 @@ target
 # Environment files holding secrets (referenced by [server].password_env)
 .env
 *.env
+
+# SDD scratch ledger (superpowers subagent-driven-development)
+.superpowers/
