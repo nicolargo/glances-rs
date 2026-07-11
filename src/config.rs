@@ -24,6 +24,7 @@ pub struct Config {
     pub security: SecurityConfig,
     pub collect: CollectConfig,
     pub plugins: HashMap<String, PluginConfig>,
+    pub alerts: AlertsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -120,6 +121,25 @@ impl Default for CollectConfig {
             refresh: 2.0,
             idle_cycles: 5,
             guard_timeout: 5.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AlertsConfig {
+    /// Max retained alert events; the journal is a ring of this size (§4.1).
+    pub history_size: usize,
+    /// Default hysteresis window in seconds; an observed level must persist
+    /// this long before a transition is committed (§2, §5.3).
+    pub min_duration_seconds: f64,
+}
+
+impl Default for AlertsConfig {
+    fn default() -> Self {
+        Self {
+            history_size: 200,
+            min_duration_seconds: 5.0,
         }
     }
 }
@@ -567,5 +587,19 @@ mod tests {
         assert_eq!(fs.thresholds_by_item["/"]["percent"].critical, Some(95.0));
         assert_eq!(fs.thresholds_by_item["/"]["percent"].warning, None);
         assert_eq!(fs.min_duration_seconds, Some(10.0));
+    }
+
+    #[test]
+    fn alerts_section_defaults_and_overrides() {
+        let d = Config::from_toml("").unwrap();
+        assert_eq!(d.alerts.history_size, 200);
+        assert_eq!(d.alerts.min_duration_seconds, 5.0);
+
+        let c = Config::from_toml(
+            "[alerts]\nhistory_size = 50\nmin_duration_seconds = 2.5\n",
+        )
+        .unwrap();
+        assert_eq!(c.alerts.history_size, 50);
+        assert_eq!(c.alerts.min_duration_seconds, 2.5);
     }
 }
