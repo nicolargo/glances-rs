@@ -14,12 +14,12 @@
 | `/api/5/{plugin}`        | GET    | The plugin's payload in the v5 envelope (§4) | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
 | `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
+| `/api/5/alert`           | GET    | Array of alert events, most-recent last (§8.3) | `200` always, `[]` when empty; never `503` — read-only, does not wake or wait on a collector |
 | `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
-`/api/5/token` (Basic auth only), `/api/5/{plugin}/info`, `/api/5/alert`,
-`/api/5/config`.
+`/api/5/token` (Basic auth only), `/api/5/{plugin}/info`, `/api/5/config`.
 
 **Security (ARCHITECTURE.md §7).** The `/api/5/*` routes sit behind, in order,
 a CORS layer, a trusted-`Host` check and HTTP Basic auth. Added status codes:
@@ -40,7 +40,7 @@ check, no wake-up.
 |---|---|---|
 | Known plugin, no data yet | `200` with `null` body | **Waits** for the first collection cycle; `503` if it does not arrive within the guard timeout. A `200` always carries real data. |
 | Auth | Basic + Bearer token (`/token`) | Basic only (v1). |
-| `_levels` (alert thresholds) | Per-field threshold metadata | Present but **always `{}`** until alerting lands (v0.3.0; ARCHITECTURE.md §6.1, §8.1). The envelope key is there, the content is empty. |
+| `_levels` (alert thresholds) | Per-field threshold metadata | Populated per §8 Alerting. `{}` when no threshold is configured for that plugin (the default, config-only — no built-in thresholds). |
 | Platform-specific fields | Present per platform/psutil | **Full field parity on Linux** (the primary target); macOS/Windows degrade to the portable subset `sysinfo` exposes. Clients treat absent fields as "not available", exactly as with Glances' platform-specific fields. |
 
 > **Field parity (Linux).** `glances-rs` reads `/proc/stat`, `/proc/meminfo`,
@@ -64,19 +64,25 @@ top-level keys to the plugin's stats:
 - `time_since_update` — measured seconds (float) since the plugin's previous
   cycle (real `Instant` elapsed, never the nominal refresh — ARCHITECTURE.md
   §5.4); `0.0` on the very first cycle of an instantaneous plugin.
-- `_levels` — alert-threshold metadata, **always `{}`** until alerting
-  (v0.3.0).
+- `_levels` — alert-threshold decoration (§8 Alerting), rebuilt fresh from the
+  current sample every cycle. `{}` when the plugin has no configured
+  threshold.
 
 The wrapping depends on the plugin's stat type:
 
 - **Object plugins** (`mem`, `cpu`, `load`, `system`, `uptime`, `memswap`) —
   the stat fields sit at the **top level**, next to `time_since_update` and
-  `_levels`:
+  `_levels`. `_levels` is keyed by field name:
   ```json
   { "seconds": 71988, "time_since_update": 2.004, "_levels": {} }
   ```
+  ```json
+  { "percent": 92.1, "time_since_update": 2.004,
+    "_levels": { "percent": { "level": "critical", "prominent": true } } }
+  ```
 - **Collection plugins** (`network`, `fs`, `diskio`) — the per-item array is
-  placed under a **`data`** key:
+  placed under a **`data`** key; `_levels` is keyed by the stringified
+  primary-key value, then field name (§8.2):
   ```json
   { "data": [ { … }, { … } ], "time_since_update": 2.004, "_levels": {} }
   ```
@@ -185,6 +191,7 @@ One element per interface; primary key `interface_name`:
       "bytes_sent":     1022.4,
       "bytes_all":      1533.6,
       "speed":          0,
+      "bytes_speed_rate_per_sec": 62500000,
       "is_up":          true
     }
   ],
@@ -208,6 +215,16 @@ One element per interface; primary key `interface_name`:
   speed in bits/s — Mbps × 1048576, `0` when unknown) are added, both from
   `/sys/class/net`. **macOS/Windows:** `is_up`/`speed` are omitted
   (`sysinfo` does not expose them).
+- `bytes_speed_rate_per_sec` — the per-direction link capacity in bytes/s,
+  used as the `normalize_by` divisor for the `bytes_recv`/`bytes_sent` alert
+  thresholds (§8.1): `speed_mbits × 1e6 / 8 / 2` (decimal Mbit/s → bytes/s,
+  halved for full-duplex per-direction capacity — note this is a different
+  scale than `speed`, which uses the binary 1048576 factor). **Linux only**,
+  read from `/sys/class/net/<iface>/speed`; `0` when the link speed is
+  unknown, the interface is down, or off-Linux (the field is present and `0`
+  on Linux, entirely absent on macOS/Windows, matching `is_up`/`speed`).
+  Collected unconditionally, independent of whether any threshold is
+  configured.
 
 ### 5.5 `system` — object, instantaneous
 
@@ -376,3 +393,153 @@ First match wins:
 No file found ⇒ built-in defaults (loopback bind, no password, refresh 2 s,
 idle timeout 5 cycles). A path given by flag or env var that does not exist
 is a **startup error**, not a silent fallback.
+
+## 8. Alerting (v0.3.0)
+
+Closes the last payload-parity gap with Glances v5: per-field `_levels`
+decoration and the `/api/5/alert` event journal. **Conservatism on
+defaults:** there are **no built-in thresholds**. With the default config,
+every plugin's `_levels` is `{}` and `/api/5/alert` returns `[]` — alerting
+is entirely opt-in via configured thresholds.
+
+### 8.1 Configuration
+
+Thresholds are declared per plugin, at two levels — a global default for
+every item and an optional per-item override, merged **per limit key**
+(item-specific wins only for the limits it declares; the rest fall back to
+global):
+
+```toml
+# Scalar plugin — keyed by field name
+[plugins.mem.thresholds.percent]
+careful  = 70.0
+warning  = 80.0
+critical = 90.0
+
+# Collection plugin, global — applies to every item, keyed by field name
+[plugins.fs.thresholds.percent]
+careful  = 70.0
+warning  = 80.0
+
+# Collection plugin, specific — keyed by item primary key, then field name.
+# Overrides only the limit keys it declares; the rest are inherited from
+# the global block above.
+[plugins.fs.thresholds_by_item."/".percent]
+critical = 95.0
+
+# Optional per-plugin hysteresis window, uniform across all of that
+# plugin's items — overrides the global [alerts] default below.
+[plugins.fs]
+min_duration_seconds = 10.0
+
+[alerts]
+history_size          = 200   # default; max retained events (ring buffer)
+min_duration_seconds  = 5.0   # default; global hysteresis window
+```
+
+Any subset of `careful`/`warning`/`critical` is valid. Declared and merged
+threshold sets are validated at startup: all present limits must be finite
+and satisfy `careful <= warning <= critical`; `alerts.history_size >= 1`;
+`min_duration_seconds >= 0` (global and any per-plugin override). An invalid
+config is a startup error, not a silent clamp.
+
+Only a static, per-plugin allow-list of fields is alertable (mirroring
+Glances' `watched` flag) — an unlisted field never produces `_levels` even
+if a threshold happens to be configured for it. Each alertable field also
+has a static `prominent` flag (copied from Glances, not configurable) used
+by clients for highlight rendering, and a `watch_direction`: `high` (breach
+when the value rises above a limit) or `low` (breach when it falls below).
+Every v0.3.0 alertable field is `high` — the `low` direction is implemented
+and unit-tested but not yet used by any shipped field.
+
+Some fields declare `normalize_by`: the level is computed against
+`value / divisor` instead of the raw value, with thresholds expressed as a
+ratio in `[0, 1]` instead of a direct percentage/count. `network`'s
+`bytes_recv`/`bytes_sent` use this against the new `bytes_speed_rate_per_sec`
+field (§5.4): if the divisor is absent, `0`, or non-finite (unknown link
+speed), that field's `_levels` entry — and any event — is skipped for that
+cycle, matching Glances' "unknown link speed" semantics.
+
+### 8.2 `_levels` shape
+
+`_levels` is always a **top-level** envelope key (never inside `data`
+items), rebuilt fresh from the current sample every cycle — a field/item
+absent from the current sample cannot leave a stale `_levels` entry behind.
+Each leaf is `{ "level": "ok"|"careful"|"warning"|"critical", "prominent":
+<bool> }`. An entry is emitted only for a field that is both alertable
+(§8.1) and has a resolved threshold — unconfigured or non-alertable fields
+are simply absent, including the `ok` case (so a client can observe a
+return to `ok`, it is not just omitted for "healthy").
+
+- **Object plugins** — keyed by field name:
+  ```json
+  "_levels": { "percent": { "level": "careful", "prominent": true } }
+  ```
+- **Collection plugins** — keyed by the **stringified primary-key value**,
+  then field name:
+  ```json
+  "_levels": {
+    "/":     { "percent": { "level": "critical", "prominent": false } },
+    "/home": { "percent": { "level": "ok",       "prominent": false } }
+  }
+  ```
+  Only items present in the current sample appear.
+
+`_levels` carries the **raw, instantaneous** level, recomputed every cycle —
+it is not debounced. `min_duration` hysteresis (§8.1) gates only whether a
+transition is *journaled* as an `/api/5/alert` event, so a brief spike is
+visible in `_levels` immediately even if it never produces an event.
+
+### 8.3 `/api/5/alert`
+
+`GET /api/5/alert` returns the accumulated event journal as a JSON array,
+most-recent last, `[]` when empty. It sits behind the same auth/CORS/
+trusted-host stack as the other `/api/5/*` routes (§1), but unlike them it
+**never wakes or waits on a collector** and **never returns `503`** — it is
+a cheap read of in-memory state, like `pluginslist`.
+
+Each event:
+
+```json
+{
+  "ts":              "2026-06-14T12:34:56Z",
+  "plugin":          "fs",
+  "key":             "/",
+  "field":           "percent",
+  "level":           "critical",
+  "previous_level":  "warning",
+  "value":           95.0,
+  "prominent":       false,
+  "is_initial":      false,
+  "hostname":        "server1"
+}
+```
+
+- `ts` — ISO 8601 UTC, second precision.
+- `key` — `null` for a scalar plugin, the item's primary-key value
+  (stringified) for a collection plugin.
+- `value` — the raw (undivided) field value, even for a `normalize_by`
+  field.
+- `is_initial` — `true` only for the very first committed level a
+  `(plugin, key, field)` triple ever reaches (i.e. no `ok` was committed
+  before it); `false` for every later transition, including a return to
+  `ok`.
+- An event is journaled only once an observed level has persisted for the
+  effective `min_duration` (§8.1); a transient breach that never persists
+  long enough produces no event, even though it was visible in `_levels`.
+- The journal is a ring buffer bounded by `[alerts].history_size` — the
+  oldest event is dropped once the bound is exceeded.
+
+**Lazy-model divergence.** Because collection only happens while a plugin
+is `Active` (ARCHITECTURE.md §3), the event journal only accrues while a
+client is actively polling that plugin. A breach that starts and clears
+entirely during an idle gap (collector stopped, no request) produces no
+event — there is no background sampling to observe it. On re-wake, a
+still-stale pending state from before the gap is reset (it cannot
+insta-commit on the first post-wake sample), but the last **committed**
+level is preserved, so a wake does not spuriously re-fire an `is_initial`
+event. This is a direct, deliberate consequence of the lazy-collection
+contract (ARCHITECTURE.md §3.2, §5.2): with sporadic polling, a breach
+shorter than `min_duration` of *sustained active* observation may simply
+never commit — no client was watching closely enough for an alert to be
+meaningful.
