@@ -95,3 +95,12 @@ async fn alert_route_records_an_event_when_a_threshold_is_breached() {
     assert!(e["ts"].as_str().unwrap().ends_with('Z'));
     assert!(e["is_initial"].is_boolean());
 }
+
+#[tokio::test]
+async fn alert_route_never_wakes_a_collector() {
+    let app = AppState::new(Config::default());
+    let router = build_router(app.clone());
+    let _ = get_json(router, "/api/5/alert").await;
+    // Like the probes (§6.4), the journal route is inert.
+    assert_eq!(app.active_collectors().await, 0);
+}
