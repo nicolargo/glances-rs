@@ -428,14 +428,107 @@ README reflect the nine plugins and the refreshed footprint.
 
 ---
 
-## Out of scope (deferred to v0.3.0+)
+# v0.3.0 — Alerting
 
-Tracked for later iterations, deliberately **not** in v0.2.0:
-**alerting** — per-field `_levels` + `/api/5/alert`, with the per-item
-`_levels` cleanup of §8.1 (this is the v0.3.0 headline, closing the last
-payload-parity gap); `/api/5/<plugin>/info` and the `sensors` plugin (§6.1,
-§8); `/api/5/config` (§6.1, needs the public-view filter of §7.6); JWT/Bearer
-auth (§7.2); in-binary TLS (§7.5).
+> Everything above shipped as **v0.2.0** (nine plugins, `current_thread`
+> runtime win). v0.3.0 has one theme: **alerting** — close the last
+> payload-parity gap with Glances v5 by populating the per-field `_levels`
+> decoration and serving `/api/5/alert`, reproducing the behaviour of the
+> reference implementation
+> [`alerts_v5.py`](https://github.com/nicolargo/glances/blob/develop-v5/glances/alerts_v5.py)
+> within the constraints of the lazy-collection engine (§3) and the
+> footprint mandate. Full design:
+> `docs/superpowers/specs/2026-06-14-alerting-design.md`.
+>
+> No change to the collection engine itself: alerting is one new shared
+> component, `Alerts` (ARCHITECTURE.md §5.6), fed by `plugin_loop` between
+> `collect()` and `publish()` — plugins are untouched and know nothing about
+> thresholds.
+
+## Phase 10 — Alerting engine
+
+- [x] `src/alerts.rs`: the `Alerts` component — a bounded event journal
+      (`VecDeque`, `[alerts].history_size`, default 200) plus a hysteresis
+      map (`(plugin, item key, field) -> AlertState`), both behind one
+      `std::sync::Mutex` (ARCHITECTURE.md §5.6). Lives in `AppState`, not a
+      plugin's `State`, because it must survive an idle→wake cycle (§3.2).
+- [x] Two-level threshold config (`config.rs`): `[plugins.<p>].thresholds`
+      (global, per field) and `thresholds_by_item` (per item primary key),
+      merged **per limit key** — an item override replaces only the limits
+      it declares, inheriting the rest from global. `[plugins.<p>]
+      .min_duration_seconds` (per-plugin hysteresis override, uniform
+      across all of that plugin's items) and the global `[alerts]` section
+      (`history_size`, `min_duration_seconds`; defaults 200 / 5.0). Startup
+      validation fails closed: finite, ordered (`careful <= warning <=
+      critical`) limits for both declared and merged blocks;
+      `history_size >= 1`; `min_duration_seconds >= 0`.
+- [x] Per-field `_levels`, rebuilt from the current sample every cycle —
+      always top-level in the envelope for both object and collection
+      plugins (scalar keyed by field name, collection keyed by
+      `str(primary_key)` then field name); each leaf
+      `{ "level", "prominent" }`. Emitted only for a static, per-plugin
+      allow-list of alertable fields that also has a resolved threshold —
+      **no built-in defaults** ship (config-only; the deliberate
+      conservatism divergence from Glances, whose schema ships defaults).
+- [x] `min_duration` hysteresis (`_reconcile` parity): an observed level
+      must persist for the effective window before a transition commits and
+      is journaled to `/api/5/alert`; `_levels` itself stays the raw,
+      instantaneous level, never debounced. Idle-gap reset: a stale pending
+      window from before an idle→wake gap cannot insta-commit on the first
+      post-wake sample; the last committed level is preserved (no spurious
+      `is_initial` re-fire).
+- [x] `watch_direction` (`High`/`Low`): the level ladder is direction-aware.
+      Every v0.3.0 alertable field is `High`; `Low` is engine-complete and
+      unit-tested so the day a low-direction field (e.g. free disk space)
+      is added, the contract is already correct.
+- [x] `normalize_by`: a field can compare `value / divisor` against a
+      ratio-`[0, 1]` threshold instead of the raw value; a missing, zero, or
+      non-finite divisor **skips** the field for that cycle (no `_levels`
+      entry, no event) — matching Glances' "unknown link speed" semantics.
+- [x] `GET /api/5/alert`: the event journal as a JSON array, most-recent
+      last, `[]` when empty. Sits behind the same auth/CORS/trusted-host
+      stack as the other `/api/5/*` routes, but is read-only — it never
+      wakes or waits on a collector, and never returns `503`.
+- [x] `network`: new payload field `bytes_speed_rate_per_sec` (per-direction
+      link capacity in bytes/s — `speed_mbits × 1e6 / 8 / 2`, `0` when
+      unknown, Linux only, from `/sys/class/net/<iface>/speed`) — a
+      payload-parity addition needed as the `normalize_by` divisor for
+      `bytes_recv`/`bytes_sent`, collected unconditionally regardless of
+      whether any threshold is configured (docs/api.md §5.4).
+- [x] The §8.1 `_levels` cleanup note is resolved: rebuilt fresh from the
+      current sample every cycle, `_levels` can never carry a stale item;
+      the internal hysteresis map is pruned for every collection item
+      absent from the current sample, on every cycle — deliberately better
+      than the Glances v5 reference, which never garbage-collects that
+      state (ARCHITECTURE.md §8.1).
+
+**Tests:** unit (`alerts.rs`) — level computation per limit subset for both
+directions, the `normalize_by` transform and its skip conditions, hysteresis
+commit/debounce/return-to-ok/`is_initial`, idle-gap reset, history ring
+eviction, stale-key pruning for collection items; config — threshold
+parsing (scalar and `thresholds_by_item`), two-level per-limit merge,
+ordering validation on declared and merged blocks, `[alerts]` defaults,
+per-plugin `min_duration_seconds`; integration — a configured breaching
+value populates `_levels` and, after `min_duration`, produces an
+`/api/5/alert` event; an unconfigured plugin stays `_levels: {}` and
+`/api/5/alert` returns `[]`; `/api/5/alert` never wakes a collector and is
+reachable under auth.
+
+**Exit criteria:** `docs/api.md` §8 and ARCHITECTURE.md §5.6/§8.1 document
+the shipped behaviour field-for-field; `make check` green. A footprint
+re-baseline against v0.2.0 (spec §9) is still pending: with the default
+config (no thresholds) RSS/CPU must be indistinguishable, except for
+`network`'s unconditional `bytes_speed_rate_per_sec` addition, which is
+measured separately.
+
+---
+
+## Out of scope (deferred beyond v0.3.0)
+
+Tracked for later iterations, deliberately **not** in v0.3.0:
+`/api/5/<plugin>/info` and the `sensors` plugin (§6.1, §8); `/api/5/config`
+(§6.1, needs the public-view filter of §7.6); JWT/Bearer auth (§7.2);
+in-binary TLS (§7.5).
 
 ## Open questions → where they get answered
 

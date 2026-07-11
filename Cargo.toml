@@ -1,6 +1,6 @@
 [package]
 name = "glances-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.94"
 description = "Lightweight monitoring server with a Glances-compatible REST API and a minimal CPU/RAM footprint"
