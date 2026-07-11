@@ -238,6 +238,40 @@ promise (section 3) honest — the first response carries real rates, not an
 empty list. The knowledge "I need two samples" stays entirely inside the
 plugin; the loop and the wake-up machinery know nothing about it.
 
+### 5.6 The `Alerts` component (v0.3.0)
+
+Alerting (per-field `_levels` decoration + the `/api/5/alert` event journal,
+`docs/api.md` §8) needed one more piece of shared state, `Alerts`, and it
+deliberately does **not** follow the §5.4 pattern of "state local to the
+loop task".
+
+- **Lives in `AppState`, not in a plugin's `State`.** A plugin's `State` is
+  owned by its loop task and dropped the moment the collector goes idle
+  (§3, §5.2) — but the alert hysteresis map and the event history must
+  *survive* an idle→wake cycle (a `min_duration` window spans requests, and
+  `/api/5/alert` must answer even while every collector is asleep). `Alerts`
+  is therefore a cross-cutting component in `AppState`, the same shape as
+  the collector registry (§5.1) — a single source of truth, not scattered
+  per-plugin state.
+- **One `std::sync::Mutex`** (not the Tokio `RwLock` used for the store)
+  guards both the bounded event history and the hysteresis map together —
+  they are written together on every commit, so splitting them would only
+  add complexity for no benefit (rejected as design alternative (B) in the
+  spec). The critical section is a synchronous, short, uncontended per-cycle
+  field walk — a `std::` mutex is the right primitive; there is no `.await`
+  inside the lock, so it never blocks the runtime.
+- **Fed by `plugin_loop`, not by the plugins.** `Alerts::observe(&config,
+  id, &mut value)` is called between `collect()` and `publish()`
+  (`collector.rs::plugin_loop`) — it rewrites the freshly collected value's
+  `_levels` in place, runs the `min_duration` hysteresis, and appends any
+  committed transition to the journal. Plugins themselves are untouched:
+  they still bake an empty `_levels: {}` placeholder in `envelope()` (§5.3),
+  and know nothing about thresholds.
+- **Free when unconfigured.** With no thresholds configured for a plugin,
+  `observe` early-returns after a single lookup — the conservative,
+  footprint-first default (no built-in thresholds) means the alert path
+  costs nothing for the common case.
+
 ---
 
 ## 6. The REST API layer
@@ -263,7 +297,12 @@ names.
   would require *recreating* a schema (hand-written, or via `schemars`).
   Revisit when a concrete consumer needs it. *(Note: `/pluginslist` is kept
   because it is cheap — just names, no metadata.)*
-- `/api/5/alert` — no alerting in v1.
+- `/api/5/alert` — **implemented in v0.3.0**, not deferred any further. See
+  the `Alerts` component (§5.6) and `docs/api.md` §8 for the config,
+  `_levels` shape and event schema. Because the event journal is fed only
+  from `plugin_loop`, it only accrues while a plugin is `Active` (§3.2) — a
+  breach that starts and clears entirely during an idle gap produces no
+  event; documented as the §5.2 idle-gap divergence in `docs/api.md` §8.3.
 - `/api/5/config` — depends on the config layer; also the source of a known
   Glances CVE (see 7). Defer until it can be done safely.
 
@@ -400,8 +439,16 @@ changes at runtime (interfaces appear/disappear).
     and new. Otherwise dead interfaces accumulate in `previous` forever — a
     slow memory leak, ironic for a footprint-focused project. This must be a
     code comment so a future "optimization" does not reintroduce the leak.
-  - When alerting is added later, per-item alert levels (`_levels`) must be
-    cleaned up the same way — no fantom levels for dead interfaces.
+  - **Resolved (v0.3.0).** `_levels` cannot leak stale items by
+    construction: `Alerts::observe` (§5.6) rebuilds it from scratch every
+    cycle, directly from the current sample, so a dead interface's levels
+    disappear the same cycle it does. The only alert state that *could*
+    leak across cycles is the internal hysteresis map (`(plugin, key,
+    field) -> AlertState`, not part of the envelope) — `observe` prunes it,
+    on every cycle, for every collection item absent from the current
+    sample. This is deliberately better than the Glances v5 reference
+    (`alerts_v5.py`), which never garbage-collects that state for
+    disappeared items — a slow leak.
 
 ---
 
