@@ -10,8 +10,8 @@ Branch base (merge-base main): 12a12c93c223c914ec76440aebc1083ef1ca6774
 - [x] A3 threshold + alerts validation
 - [x] B1 alerts.rs skeleton, Level/Direction, compute_level
 - [x] B2 threshold resolve/merge
-- [ ] B3 AlertField table + key_field
-- [ ] B4 reconcile hysteresis
+- [x] B3 AlertField table + key_field
+- [x] B4 reconcile hysteresis
 - [ ] B5 iso8601
 - [ ] B6 Alerts facade observe/history
 - [ ] C1 AppState.alerts
@@ -34,3 +34,5 @@ Task A3: complete (commits 6429e35..3f73b6b, review clean)
 Task B1: complete (commits 3f73b6b..8b5a32f, review clean)
   Minor(B1): low_direction_ladder lacks an explicit boundary-inclusive (value==limit) case — defer to final review
 Task B2: complete (commits 8b5a32f..488c29a, review clean)
+Task B3: complete (commits 488c29a..f577701 incl fmt fix f577701, review clean after fix)
+Task B4: complete (commits f577701..a6c71dc, review clean)
