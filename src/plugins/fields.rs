@@ -131,13 +131,13 @@ const CPU_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("total", "Sum of all CPU percentages (except idle).", Unit::Percent).watched_high(true),
     FieldInfo::new("system", "Percent time spent in kernel space. System CPU time is the time spent running code in the operating system kernel.", Unit::Percent).watched_high(false),
     FieldInfo::new("user", "Percent time spent in user space. User CPU time is the time spent on the processor running the program's code (or code in libraries).", Unit::Percent).watched_high(false),
-    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(false),
+    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(true),
     FieldInfo::new("idle", "Percent of CPU not used by any program. Every program or task that runs occupies a certain amount of processing time on the CPU; when the CPU has completed all tasks it is idle.", Unit::Percent),
     FieldInfo::new("irq", "(Linux and BSD) Percent time spent servicing hardware and software interrupts.", Unit::Percent),
     FieldInfo::new("nice", "(UNIX) Percent time occupied by user-level processes with a positive nice value (processes that have been niced down).", Unit::Percent),
-    FieldInfo::new("steal", "(Linux) Percentage of time a virtual CPU waits for a real CPU while the hypervisor is servicing another virtual processor.", Unit::Percent).watched_high(true),
+    FieldInfo::new("steal", "(Linux) Percentage of time a virtual CPU waits for a real CPU while the hypervisor is servicing another virtual processor.", Unit::Percent).watched_high(false),
     FieldInfo::new("guest", "(Linux) Time spent running a virtual CPU for guest operating systems under the control of the Linux kernel.", Unit::Percent),
-    FieldInfo::new("ctx_switches", "Number of context switches (voluntary + involuntary) per second. A context switch is the procedure a CPU follows to change from one task to another while ensuring the tasks do not conflict.", Unit::Number).rate().watched_high(true).short("ctx_sw"),
+    FieldInfo::new("ctx_switches", "Number of context switches (voluntary + involuntary) per second. A context switch is the procedure a CPU follows to change from one task to another while ensuring the tasks do not conflict.", Unit::Number).rate().watched_high(false).normalize("cpucore").short("ctx_sw"),
     FieldInfo::new("interrupts", "Number of interrupts per second.", Unit::Number).rate().short("inter"),
     FieldInfo::new("soft_interrupts", "Number of software interrupts per second. Always 0 on Windows and SunOS.", Unit::Number).rate().short("sw_int"),
     FieldInfo::new("syscalls", "Number of system calls per second. Always 0 on Linux.", Unit::Number).rate(),
@@ -146,8 +146,8 @@ const CPU_FIELDS: &[FieldInfo] = &[
 
 const LOAD_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("min1", "Average number of processes waiting in the run-queue plus those currently executing, over 1 minute.", Unit::Float),
-    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).watched_high(false),
-    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).watched_high(true),
+    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).watched_high(false).normalize("cpucore"),
+    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).watched_high(true).normalize("cpucore"),
     FieldInfo::new("cpucore", "Total number of logical CPU cores.", Unit::Number).internal(),
 ];
 
@@ -315,22 +315,21 @@ mod tests {
     use super::*;
     use crate::plugins::PluginId;
 
-    // The watched subset must equal the v0.3.0 AlertField table field-for-field
-    // (field, prominent, direction, normalize_by). Proves this refactor is
-    // behaviour-neutral. Phase 1b updates the five rows it later corrects.
+    // The watched subset must equal the live Glances v5 `/info` alertable
+    // table field-for-field (field, prominent, direction, normalize_by).
     #[test]
-    fn watched_subset_matches_v030_alertfield() {
-        // (plugin, field, prominent, normalize_by) — the v0.3.0 alertable set.
+    fn watched_subset_matches_glances_info() {
+        // (plugin, field, prominent, normalize_by) — the Glances v5 alertable set.
         let expected: &[(PluginId, &str, bool, Option<&str>)] = &[
             (PluginId::Mem, "percent", true, None),
             (PluginId::Cpu, "total", true, None),
             (PluginId::Cpu, "system", false, None),
             (PluginId::Cpu, "user", false, None),
-            (PluginId::Cpu, "iowait", false, None),
-            (PluginId::Cpu, "steal", true, None),
-            (PluginId::Cpu, "ctx_switches", true, None),
-            (PluginId::Load, "min5", false, None),
-            (PluginId::Load, "min15", true, None),
+            (PluginId::Cpu, "iowait", true, None),
+            (PluginId::Cpu, "steal", false, None),
+            (PluginId::Cpu, "ctx_switches", false, Some("cpucore")),
+            (PluginId::Load, "min5", false, Some("cpucore")),
+            (PluginId::Load, "min15", true, Some("cpucore")),
             (PluginId::MemSwap, "percent", true, None),
             (PluginId::MemSwap, "sin", false, None),
             (PluginId::MemSwap, "sout", false, None),

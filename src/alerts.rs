@@ -504,6 +504,23 @@ mod tests {
     }
 
     #[test]
+    fn cpucore_normalizes_load_level() {
+        // load.min15 threshold on the normalized (per-core) value.
+        let config = Config::from_toml(
+            "[plugins.load.thresholds.min15]\ncareful = 1.0\nwarning = 2.0\ncritical = 4.0\n",
+        )
+        .unwrap();
+        // 8.0 / 4 cores = 2.0 -> warning (not critical, which raw 8.0 would be).
+        let stats = serde_json::json!({ "min15": 8.0, "cpucore": 4 });
+        let af = crate::plugins::fields::alert_fields(PluginId::Load)
+            .find(|f| f.field == "min15")
+            .unwrap();
+        let (level, raw) = level_for(&config, PluginId::Load, None, af, &stats).unwrap();
+        assert_eq!(level, Level::Warning);
+        assert_eq!(raw, 8.0); // event carries the undivided value
+    }
+
+    #[test]
     fn observe_prunes_state_for_disappeared_items() {
         let config = cfg("[alerts]\nmin_duration_seconds = 0.0\n\
                           [plugins.fs.thresholds.percent]\ncritical = 90.0\n");
