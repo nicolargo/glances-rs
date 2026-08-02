@@ -523,12 +523,85 @@ measured separately.
 
 ---
 
+# v0.4.0 — `/info` (field schema introspection)
+
+> Everything above shipped as **v0.3.0** (alerting). v0.4.0 has one theme:
+> expose the per-plugin field schema (`fields_description`) of Glances v5 as
+> `GET /api/5/<plugin>/info`, and, in doing so, unify field metadata that had
+> started to live in two places (the alerting engine's alertable-field list,
+> and what `/info` would otherwise need as its own table). Read-only, inert,
+> config-aware; no new collection, no new dependency. Full design:
+> `docs/superpowers/specs/2026-08-02-info-endpoint-design.md`.
+
+## Phase 11 — Unified field metadata & the `/info` route
+
+- [x] **Phase 1 (behaviour-neutral refactor).** New module
+      `src/plugins/fields.rs`: `FieldInfo`/`fields(id)`, the `&'static`
+      per-plugin table describing every field a plugin emits (not just
+      watched ones) — description, unit, `short_name`, `primary_key`,
+      `rate`, `internal`, plus the alert-only `watched`/`direction`/
+      `prominent`/`normalize_by`. `Direction` moved here from `alerts.rs`;
+      `alerts.rs` no longer owns a separate `AlertField` table — its
+      `alert_fields(id)` becomes a filtered view over `fields(id)`. Carries
+      the v0.3.0 alert attributes **verbatim**; no behavioural change. Gate:
+      the full existing `alerts.rs` unit/integration suite stays green, plus
+      a new guard test asserting the watched subset of `fields(id)` matches
+      the pre-refactor `AlertField` set field-for-field (field, prominent,
+      direction, normalize_by).
+- [x] **Phase 1b (alerting parity fix).** Five alert attributes corrected to
+      match the maintainer's live Glances v5 `/info` output (ARCHITECTURE.md
+      §5.7): `cpu.iowait` prominent → `true`, `cpu.steal` prominent →
+      `false`, `cpu.ctx_switches` prominent → `false` +
+      `normalize_by="cpucore"`, `load.min5`/`load.min15` +
+      `normalize_by="cpucore"`. No field added to or removed from any
+      plugin's watched set. The one behavioural consequence:
+      `normalize_by="cpucore"` makes `load`/`ctx_switches` level computation
+      per-core (`value / cpucore` vs. threshold) wherever an operator has
+      configured `cpu`/`load` thresholds — default config (no thresholds) is
+      unaffected. Landed as its own isolated commit, after Phase 1 proved
+      the refactor neutral; the guard test and the `normalize_by` unit tests
+      were updated to the corrected attributes.
+- [x] **Phase 2 (new feature).** `GET /api/5/<plugin>/info`
+      (`src/api/mod.rs`): a new axum route alongside `/api/5/{plugin}`,
+      under the same auth/CORS/trusted-host stack. Inert — reads only
+      `fields(id)` and `config`, never the store or the collector registry;
+      never wakes, never waits, never `503`s (same read-only class as
+      `/api/5/alert`). Body: an object keyed by field name, table order,
+      whitelist keys per `docs/api.md` §9 (`history`/`strict_thresholds` are
+      never emitted — glances-rs implements neither). `default_thresholds`
+      reflects the operator's configured **global** thresholds only
+      (`thresholds_by_item` is not reflected), present only when configured,
+      partial-aware. `404` on an unknown or disabled plugin name, matching
+      the `/api/5/{plugin}` convention.
+
+**Tests:** unit (`plugins::fields`) — non-empty tables for all nine plugins;
+the watched-subset guard against the corrected Glances `/info` attributes;
+`primary_key: true` on exactly the field named by `key_field(id)` for
+collection plugins, none for scalar plugins; `Unit`/`Direction` string
+mappings. Integration (`tests/info.rs`, via `oneshot`) — `mem/info` matches
+the scalar shape (no `primary_key`, `percent` watched/prominent, no built-in
+`default_thresholds`); `network/info` keyed by field name with
+`interface_name.primary_key`, `bytes_recv` rate/watched/`normalize_by`;
+`cpu/info` carries `internal: true` on `cpucore` and no field carries
+`history`/`strict_thresholds`; `default_thresholds` absent by default,
+present and partial-aware once `[plugins.mem.thresholds.percent]` is
+configured; unknown plugin → `404`; `/info` never wakes a collector
+(`active_collectors() == 0` after the call); the field-set invariant (every
+emitted data key is documented in `/info`) for `mem` and `fs`.
+
+**Exit criteria:** `docs/api.md` §9 and ARCHITECTURE.md §5.7 document the
+shipped route field-for-field; `make check` green; version bumped to
+`0.4.0`. A footprint re-baseline against v0.3.0 is pending — expected
+indistinguishable under default config (`fields.rs` is `&'static`, `/info`
+allocates only per call, no new dependency).
+
+---
+
 ## Out of scope (deferred beyond v0.3.0)
 
 Tracked for later iterations, deliberately **not** in v0.3.0:
-`/api/5/<plugin>/info` and the `sensors` plugin (§6.1, §8); `/api/5/config`
-(§6.1, needs the public-view filter of §7.6); JWT/Bearer auth (§7.2);
-in-binary TLS (§7.5).
+the `sensors` plugin (§6.1, §8); `/api/5/config` (§6.1, needs the
+public-view filter of §7.6); JWT/Bearer auth (§7.2); in-binary TLS (§7.5).
 
 ## Open questions → where they get answered
 

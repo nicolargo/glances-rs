@@ -272,6 +272,71 @@ loop task".
   footprint-first default (no built-in thresholds) means the alert path
   costs nothing for the common case.
 
+### 5.7 Field metadata — `plugins::fields` (v0.4.0)
+
+`GET /api/5/<plugin>/info` (§6.1, `docs/api.md` §9) needed a static
+description of every field a plugin emits — description, unit, and the
+alert-relevant attributes. Rather than adding a second, `/info`-only table
+alongside the alerting engine's existing per-plugin alertable-field list, the
+two were unified into one module, `src/plugins/fields.rs`: **the single
+source of static field metadata**, consumed by both the `/info` handler and
+`Alerts`.
+
+- **`FieldInfo`** describes one emitted field: `field`, `description`,
+  `unit` (the `Unit` enum, `as_str()` mapped to Glances' vocabulary —
+  `bytes`, `percent`, `bytespers`, `bitpersecond`, `number`, `float`, `bool`,
+  `string`, `seconds`), `short_name`, `primary_key`, `rate`, `internal`,
+  and the alert-only `watched`/`direction`/`prominent`/`normalize_by`.
+  `pub fn fields(id: PluginId) -> &'static [FieldInfo]` returns **every**
+  field a plugin emits, not just the watched ones, in the table's stable
+  order — `&'static` data, zero runtime allocation (footprint mandate).
+- **`Direction`** (alert threshold-breach direction: `High`/`Low`) moved here
+  from `alerts.rs`, which now imports it.
+- **`AlertField` is retired.** `alerts.rs` no longer owns a separate
+  per-plugin alertable-field table. `alert_fields(id)` is now a
+  zero-allocation filtered view: `fields(id).iter().filter(|f| f.watched)` —
+  the alerting engine's alertable set is a *subset view* of the `/info`
+  schema, not a parallel table that could drift from it. This closes a
+  latent double-source-of-truth: before v0.4.0, `/info` would have needed
+  its own field table, hand-kept in sync with `alerts.rs`'s `AlertField`.
+- **Layering.** Field metadata is plugin-domain schema, not `api/`- or
+  `alerts`-owned data, so it lives under `plugins::`. Both `api/` (the
+  `/info` handler) and `alerts.rs` depend on it; neither owns it.
+- **Landed in two phases** (medium-risk refactor, §3 of this document's
+  general phased-delivery posture): first the table was introduced with the
+  v0.3.0 alert attributes carried **verbatim** — a behaviour-neutral
+  refactor gated by the existing alerting test suite plus a guard test
+  asserting the watched subset of `fields(id)` matches the pre-refactor
+  `AlertField` set field-for-field. Only then, as a separate, isolated
+  commit, did the **alerting parity fix** land (below) — the one step that
+  changes alerting output.
+
+**Alerting parity fix.** glances-rs's v0.3.0 alert attributes diverged from
+Glances v5's live `/info` output on five fields, all now corrected:
+
+| field | v0.3.0 | corrected to |
+|---|---|---|
+| `cpu.iowait` | `prominent=false` | `prominent=true` |
+| `cpu.steal` | `prominent=true` | `prominent=false` |
+| `cpu.ctx_switches` | `prominent=true`, no normalize | `prominent=false`, `normalize_by="cpucore"` |
+| `load.min5` | no normalize | `normalize_by="cpucore"` |
+| `load.min15` | no normalize | `normalize_by="cpucore"` |
+
+No field was added to or removed from any plugin's watched set — only
+attributes of already-watched fields changed. `prominent` changes affect only
+`_levels`/event decoration (client highlight rendering). The one behavioural
+consequence: **`normalize_by="cpucore"` changes level computation** for
+`load.min5`/`load.min15`/`cpu.ctx_switches` — the value is now compared as
+`value / cpucore` against the configured threshold (ratio semantics, §5.6),
+not the raw value, i.e. `load`/`ctx_switches` alerting becomes **per-core**.
+This is a genuine parity fix (load average is meaningfully per-core) but is a
+real output change, scoped to operators who have configured `cpu`/`load`
+thresholds — the default config (no thresholds) is unaffected. `cpucore` is
+already present in both the `cpu` and `load` payloads, so no new field or
+collection was needed; the existing `normalize_by` divide-then-compare path
+(introduced for `network`'s `bytes_recv`/`bytes_sent`, §5.6) applies
+unchanged.
+
 ---
 
 ## 6. The REST API layer
@@ -281,6 +346,7 @@ loop task".
 | Route                  | Purpose                                  |
 |------------------------|------------------------------------------|
 | `GET /api/5/:plugin`   | One plugin's stats (`mem`/`cpu`/`load`/`network`). |
+| `GET /api/5/:plugin/info` | One plugin's static field schema (§5.7). |
 | `GET /api/5/all`       | All plugins at once.                     |
 | `GET /api/5/pluginslist` | List of available plugin names.        |
 | `GET /status`          | Liveness probe.                          |
@@ -292,11 +358,13 @@ names.
 
 **Deferred (not in v1):**
 
-- `/api/5/<plugin>/info` — returns a plugin's field schema. Deferred because
-  Rust's typed structs erase field metadata at compile time, so this route
-  would require *recreating* a schema (hand-written, or via `schemars`).
-  Revisit when a concrete consumer needs it. *(Note: `/pluginslist` is kept
-  because it is cheap — just names, no metadata.)*
+- `/api/5/<plugin>/info` — **implemented in v0.4.0**, not deferred any
+  further. The original deferral reasoning (Rust's typed structs erase field
+  metadata at compile time, so the route needs a hand-written schema) still
+  holds — it's *why* `src/plugins/fields.rs` exists (§5.7) — but a concrete
+  consumer (the alerting engine's own alertable-field table) arrived first
+  and made a hand-written table worth building: `/info` now serialises that
+  same table.
 - `/api/5/alert` — **implemented in v0.3.0**, not deferred any further. See
   the `Alerts` component (§5.6) and `docs/api.md` §8 for the config,
   `_levels` shape and event schema. Because the event journal is fed only
