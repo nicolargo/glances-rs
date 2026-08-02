@@ -210,10 +210,21 @@ So glances-rs `network/info` lists `interface_name`, `bytes_recv`,
 It authors descriptions for `bytes_all`/`speed`/`alias` (glances-rs fields
 absent from Glances `/info`).
 
-**Invariant (tested):** every key in a plugin's `/info` appears in a real data
-sample of that plugin, and every emitted data key (except top-level envelope
-keys `time_since_update` / `_levels` and the per-item conditional `alias`)
-appears in `/info`. `/info` and the payload never disagree on the field set.
+**Invariant (tested).** Two directions, split by platform because several
+fields are Linux-only (`mem.active/inactive/buffers/cached`,
+`network.is_up/speed/bytes_speed_rate_per_sec`, `memswap.sin/sout`, all of
+`diskio`):
+
+- **All platforms — no undocumented field:** every emitted data key (except
+  the envelope keys `time_since_update` / `_levels`) appears in `/info`. This
+  is the load-bearing direction and always holds.
+- **Linux — no phantom field:** every `/info` key except the conditional
+  `alias` appears in the emitted data. Tested `#[cfg(target_os = "linux")]`,
+  where the full field set is present.
+
+Cross-platform tests use `mem` (scalar) and `fs` (collection) for the
+always-true direction; the Linux-only direction covers the platform-gated
+plugins.
 
 ---
 
