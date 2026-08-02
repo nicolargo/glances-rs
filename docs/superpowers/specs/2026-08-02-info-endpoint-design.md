@@ -16,8 +16,12 @@
 
 `/info` is additive and read-only: it introduces no new collection, no new
 dependency, and does not touch the lazy-wake-up engine (§3) or any plugin's
-`collect()`. Default runtime behaviour is unchanged — the table is `&'static`
-data, and the route allocates only when called (like `/api/5/alert`).
+`collect()`. The route itself is `&'static` data and allocates only when
+called (like `/api/5/alert`). The one deliberate runtime change is the bounded
+**alerting parity fix** (§7, Phase 1b): five alert attributes are corrected to
+match Glances `/info`, which alters `_levels`/event output — and, for
+`normalize_by="cpucore"`, level computation — but only for operators who have
+configured `cpu`/`load` thresholds. Default config (no thresholds) is unchanged.
 
 In scope:
 
@@ -25,6 +29,8 @@ In scope:
 - A unified static field-metadata table (`FieldInfo`) describing **every field
   each plugin emits**, replacing the alerting engine's `AlertField` table as
   the single source of truth.
+- A bounded alerting parity fix aligning five alert attributes with Glances
+  `/info` (§7).
 
 Out of scope (unchanged from the v0.3.0 deferral list): the `sensors` plugin;
 `/api/5/config`; JWT/Bearer auth; in-binary TLS. No per-item routes
@@ -35,22 +41,30 @@ bulk `/info` dict, which is what we mirror.
 
 ## 2. Reference contract (Glances v5 `develop-v5`)
 
-`/info` returns an object keyed by **field name** (never by collection item).
-Each field carries a **whitelist** of keys — `min_symbol`, `mmm`, `optional`
-from the internal `fields_description` are **not** serialised.
+`/info` returns an object keyed by **field name** (never by collection item),
+in a stable order. Each field carries a **whitelist** of keys — `min_symbol`,
+`mmm`, `optional` from the internal `fields_description` are **not** serialised.
+Envelope keys (`time_since_update`, `_levels`) are **not** fields and never
+appear in `/info`.
 
 | key | type | when present |
 |---|---|---|
 | `description` | string | always |
-| `unit` | string | always (`bytes`, `percent`, `bytespers`, `number`, `bool`, `string`, `seconds`, …) |
+| `unit` | string | always (`bytes`, `percent`, `bytespers`, `bitpersecond`, `number`, `float`, `bool`, `string`, `seconds`) |
 | `short_name` | string | when the field defines one |
 | `primary_key` | `true` | only on a collection plugin's key field |
 | `rate` | `true` | on per-second rate fields |
+| `internal` | `true` | on fields the UI hides but the API still exposes (e.g. `cpucore`, `fs.fs_type`, `diskio.read_count`) |
 | `watched` | `true` | on alertable fields |
 | `watch_direction` | `"high"` / `"low"` | on watched fields |
 | `prominent` | bool | on watched fields |
-| `default_thresholds` | `{careful, warning, critical}` | see §3 (glances-rs semantics differ) |
-| `normalize_by` | string | on fields compared as `value / divisor` |
+| `default_thresholds` | `{careful?, warning?, critical?}` | see §3 (glances-rs semantics differ) |
+| `normalize_by` | string | on fields compared as `value / divisor` (`cpucore` or `bytes_speed_rate_per_sec`) |
+
+**Omitted by design:** Glances also emits `history: true` and
+`strict_thresholds: true` on some fields. glances-rs implements neither the
+per-plugin history route nor strict-threshold semantics, so it does **not**
+emit those keys — `/info` never advertises a capability the server lacks.
 
 ### Reference sample — scalar plugin (`mem`, maintainer's server)
 
@@ -115,7 +129,8 @@ New module `src/plugins/fields.rs`: the single source of static field
 metadata. It describes **every emitted field**, not just watched ones.
 
 ```rust
-pub enum Unit { Bytes, Percent, BytesPerSec, Number, Bool, StringT, Seconds, /* … as needed */ }
+// as_str() strings come from the maintainer's /info dumps (§7 source note).
+pub enum Unit { Bytes, Percent, BytesPerSec, BitPerSec, Number, Float, Bool, StringT, Seconds }
 impl Unit { pub fn as_str(&self) -> &'static str { /* "bytes", "percent", "bytespers", … */ } }
 
 pub struct FieldInfo {
@@ -125,6 +140,7 @@ pub struct FieldInfo {
     pub short_name: Option<&'static str>,
     pub primary_key: bool,           // true on the collection key field (cross-check key_field())
     pub rate: bool,
+    pub internal: bool,              // Glances `internal: true` (UI-hidden, API-exposed)
     pub watched: bool,
     pub direction: Direction,        // moved here from alerts.rs
     pub prominent: bool,
@@ -146,17 +162,21 @@ pub fn fields(id: PluginId) -> &'static [FieldInfo];
 `plugins::`, not in `api/` or `alerts/`. Both `api/` (the `/info` handler) and
 `alerts.rs` depend on it; neither owns it.
 
-### Two-phase refactor (medium risk → phased, reversible)
+### Phased delivery (medium risk → phased, reversible)
 
-- **Phase 1 (behaviour-neutral):** introduce `fields.rs` with the full
-  per-plugin tables; make the alerting path derive its alertable set from the
-  watched subset; delete `AlertField`. **No behavioural change** — the entire
-  existing `alerts.rs` unit + integration suite is the gate and must stay
-  green. A guard test asserts the watched subset of `fields(id)` equals the
-  pre-refactor `AlertField` set field-for-field (field name, prominent,
-  direction, normalize_by).
+- **Phase 1 (behaviour-neutral refactor):** introduce `fields.rs` with the
+  full per-plugin tables, carrying the **current** v0.3.0 alert attributes
+  verbatim; make the alerting path derive its alertable set from the watched
+  subset; delete `AlertField`. **No behavioural change** — the entire existing
+  `alerts.rs` unit + integration suite is the gate and must stay green. A guard
+  test asserts the watched subset of `fields(id)` equals the pre-refactor
+  `AlertField` set field-for-field (field, prominent, direction, normalize_by).
+- **Phase 1b (alerting parity fix, behaviour-changing, isolated):** adjust the
+  five diverging alert attributes to match Glances `/info` (§7). This is the
+  only step that changes alerting output; it lands as its own reviewable delta
+  with updated alerting tests, *after* Phase 1 has proven the refactor neutral.
 - **Phase 2 (new feature):** add the `/info` route consuming `fields(id)`.
-  The feature lands only after the refactor is proven neutral.
+  Lands only after the table is in place and the parity fix is committed.
 
 ---
 
@@ -199,29 +219,43 @@ appears in `/info`. `/info` and the payload never disagree on the field set.
 
 ## 7. Parity & sourcing
 
-Per-field `description`, `unit`, `short_name`, `watched`, `watch_direction`,
-`prominent`, `rate`, `normalize_by`, `primary_key` are sourced **field by
-field from Glances v5** — the `fields_description` dicts in each
-`glances/plugins/<p>/__init__.py` on `develop-v5`, completed by the
-maintainer's server curls where it runs ahead of the repo.
+**Source of truth = the maintainer's running `develop-v5` server**, whose
+`/info` output was captured for all nine plugins. The `develop-v5` *repo* is
+stale (its `fields_description` dicts carry neither the alert attributes nor
+the `bytespers` units the server now returns), so the captured dumps override
+the repo field-for-field. `unit` uses the server vocabulary verbatim
+(`bytes`, `percent`, `bytespers`, `bitpersecond`, `number`, `float`, `bool`,
+`string`, `seconds`); the `Unit` enum's `as_str()` is the mapping and the
+parity anchor. Fields glances-rs emits that have no Glances entry
+(`network.bytes_all`, `network.speed`, `fs.alias`, `diskio.alias`) get
+authored descriptions.
 
-**Reconciliation task (implementation-time):** glances-rs's current watched
-set and per-field `prominent`/`direction` (chosen in v0.3.0) must match
-Glances `/info` field-for-field. Any discrepancy is a **documented parity fix**
-of the alertable set — and because the set is now unified, changing it changes
-what glances-rs can alert on, so each change is called out explicitly, not made
-silently. Where glances-rs deliberately diverges (config-only thresholds), the
-divergence is the one already recorded in §3.
+**Alerting parity fix (decided — Phase 1b).** glances-rs's v0.3.0 alert
+attributes diverge from the server `/info` on exactly five fields; all are
+corrected to match, and no field is added to or removed from any plugin's
+watched set:
 
-`unit` uses the Glances vocabulary verbatim (`bytes`, `percent`, `bytespers`,
-`number`, `bool`, `string`, `seconds`, …); the `Unit` enum's `as_str()` is the
-mapping and the parity anchor.
+| field | v0.3.0 | corrected to |
+|---|---|---|
+| `cpu.iowait` | `prominent=false` | `prominent=true` |
+| `cpu.steal` | `prominent=true` | `prominent=false` |
+| `cpu.ctx_switches` | `prominent=true`, no normalize | `prominent=false`, `normalize_by="cpucore"` |
+| `load.min5` | no normalize | `normalize_by="cpucore"` |
+| `load.min15` | no normalize | `normalize_by="cpucore"` |
+
+`prominent` changes only affect the `_levels` / event decoration.
+`normalize_by="cpucore"` **changes level computation** (value compared per
+core) for those fields when a threshold is configured — a genuine parity fix
+(load average is meaningfully per-core). The divisor `cpucore` is already in
+the `cpu` and `load` payloads, so the existing `level_for` normalize path
+(spec §5, alerting) works unchanged. The `default_thresholds` divergence
+(config-only, §3) is the one deliberate, retained difference.
 
 ---
 
 ## 8. Tests
 
-**Unit (`plugins::fields`):**
+**Unit (`plugins::fields`), Phase 1:**
 - `fields(id)` non-empty for all nine plugins (including `system`/`uptime`,
   which have emitted fields even though nothing is watched).
 - Guard: the watched subset of `fields(id)` equals the pre-refactor
@@ -231,11 +265,19 @@ mapping and the parity anchor.
   for each collection plugin, and on no field of a scalar plugin.
 - `Unit::as_str()` maps each variant to its Glances string.
 
-**Integration (`tests/info.rs`, via `oneshot`):**
+**Unit (`alerts.rs`), Phase 1b (parity fix):**
+- The guard test is updated to the corrected attributes (the five rows of §7).
+- A `normalize_by="cpucore"` case: with `cpucore` in the payload and a
+  configured `load.min15` threshold, the level is computed on `value / cpucore`
+  (not raw); the existing normalize tests gain a cpucore analogue.
+
+**Integration (`tests/info.rs`, via `oneshot`), Phase 2:**
 - `mem/info` matches the §2 scalar shape (scalar, no `primary_key`,
   `percent` watched/prominent).
 - `network/info` keyed by field name; `interface_name` has `primary_key:true`;
   `bytes_recv` has `rate:true` + `watched:true` + `normalize_by`.
+- `cpu/info` carries `internal:true` on `cpucore`, and no `history`/
+  `strict_thresholds` key on any field.
 - `default_thresholds` **absent** with default config; **present** (and
   partial-aware) after configuring `[plugins.mem].thresholds.percent`.
 - Field-set invariant (§6) for at least one scalar and one collection plugin.
@@ -244,7 +286,8 @@ mapping and the parity anchor.
 - Reachable under auth (behind Basic when a password is configured; probes-
   style test).
 
-Existing `alerts.rs` suite stays green unchanged (the Phase-1 gate).
+Existing `alerts.rs` suite stays green through Phase 1 (the neutral gate) and
+is updated only in Phase 1b for the five corrected attributes.
 
 ---
 
