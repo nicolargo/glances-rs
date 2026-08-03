@@ -396,32 +396,66 @@ contract.
       `rt-multi-thread` feature: **−18 % RSS at rest, −47 % under 100 req/s**
       (12.1 → 5.5 MiB), binary 2.2 → 2.1 MiB, suite green. Recorded in
       ARCHITECTURE.md §9.
-- [ ] **Shared sampler (§5.2)** — now that several plugins read the same
-      source (`/proc/stat` for `cpu`+`system`, `/proc/meminfo`·`vmstat` for
-      `mem`+`memswap`), measure whether redundant reads/refreshes actually
-      cost anything under concurrent `/all`. Implement the §3.7 shared sampler
-      **only if** profiling shows it matters — it must not touch the wake-up
-      architecture.
-- [ ] **Per-cycle allocation** — profile the hot path (the loop publishing a
-      fresh `serde_json::Value` every cycle, the `/proc` read buffers).
-      Evaluate reusing read buffers across cycles and/or serializing a typed
-      public struct directly instead of building a `Value`. Adopt only with a
-      measured win.
-- [ ] **Binary size / build profile** — revisit `opt-level = 3` vs `"z"/"s"`,
-      and whether a lighter allocator helps RSS, against the single-binary and
-      footprint goals (§9). Measure both axes (size *and* runtime RSS); keep
-      whatever the numbers favour.
-- [ ] **Dependency audit** — review the tree for weight that can be dropped or
-      feature-gated without losing functionality.
+- [x] **Shared sampler (§5.2)** — **REJECTED, measured negligible.**
+      Corrected claim: `cpu` and `system` do **not** both read `/proc/stat`
+      — only `cpu` does (`grep -rn '"/proc/stat"' src/` → one call site,
+      `cpu.rs`; `system.rs` uses `sysinfo::System::host_name`/
+      `kernel_version` and `/etc/os-release`, never `/proc/stat`). The one
+      real redundancy is `mem`+`memswap` both reading `/proc/meminfo`
+      independently, but that cost is bounded by the *refresh* period
+      (2.0 s default), not by request rate — negligible even under heavy
+      polling, and building a shared sampler would require a
+      synchronization point across otherwise-independent per-plugin loop
+      tasks, cutting against the §3 lazy/independent-collector
+      architecture. Full evidence in `docs/footprint-audit-v0.4.1.md`.
+- [x] **Per-cycle allocation** — **ADOPTED.** The store now holds
+      pre-serialized `bytes::Bytes` per plugin, produced once per collection
+      cycle (`plugin_loop`/`publish`) instead of a `serde_json::Value`
+      cloned and re-serialized on every request. At 100 req/s against `/all`
+      this eliminated up to ~900 redundant clone+serialize pairs/second for
+      payloads that change at most 0.5 times/second. Alongside it,
+      `Plugin::collect()` dropped `async-trait` for native `async fn` in
+      traits (RPITIT) — `Plugin` is never used as `dyn Plugin`, so this
+      removes one `Box::pin` heap allocation per collection cycle per active
+      plugin for free, and drops the `async-trait` dependency. See
+      `docs/footprint-audit-v0.4.1.md` for the full attribution (the
+      per-request win is architecturally real but not cleanly separable
+      from the build-profile change in this pass's coarse RSS/CPU
+      measurements).
+- [x] **Binary size / build profile** — **ADOPTED (`opt-level = "s"`).**
+      Isolated same-session A/B (only `opt-level` varied): **−21.7 %**
+      binary size (2,360,824 → 1,847,760 B) with no runtime regression at
+      100 req/s (RSS and CPU both flat-to-improved). `"z"` was not adopted
+      (only its binary-only size was checked, −27.1 %, as a possible future
+      follow-up). Net binary size vs the pre-pass v0.4.0 baseline: −21.1 %
+      (2,341,504 → 1,847,744 B). Recorded in `docs/footprint-audit-v0.4.1.md`.
+- [x] **Dependency audit** — **REJECTED, no actionable win found.** 76
+      unique crates in the graph, zero duplicate versions
+      (`cargo tree --duplicates`). `sysinfo`'s own subtree on Linux is just
+      `libc` + `memchr`, both already required elsewhere — the v0.2.0
+      audit's premise that `sysinfo` was the heavy dependency does not hold.
+      `tower-http` is already scoped to the `cors` feature only. The
+      heaviest single transitive contributor is `tracing-subscriber`'s
+      `env-filter` feature (~10 extra crates), but quantifying whether
+      trimming it is worth the churn needs `cargo bloat`, not installed in
+      this pass — left as a future follow-up if binary size becomes a hard
+      constraint. Full evidence in `docs/footprint-audit-v0.4.1.md`.
 
-**Tests:** no behavioural change expected — the full suite stays green. Any
-adopted optimization keeps the §5.4 safeguards and the §8.1 anti-leak rule
-intact; the footprint script is the acceptance gate.
+**Tests:** no behavioural change expected — the full suite stayed green
+throughout (per-cycle serialization and `async-trait` removal were both
+gated on the existing integration suite; the `opt-level` change is a build
+flag with no source impact). Adopted optimizations keep the §5.4 safeguards
+and the §8.1 anti-leak rule intact; `scripts/footprint.sh` was the
+acceptance gate for every runtime claim.
 
 **Exit criteria:** README footprint table refreshed for v0.2.0; each
 optimization either adopted with a recorded measured gain or explicitly
 rejected with the reason (the Phase 7 `panic = "abort"` precedent — decisions
-are recorded, not silently dropped).
+are recorded, not silently dropped). **Closed as of v0.4.1**: two
+optimizations adopted (per-cycle allocation + `async-trait` removal; build
+profile `opt-level = "s"`), two rejected with reasons (shared sampler;
+dependency audit) — see `docs/footprint-audit-v0.4.1.md` for full numbers
+and attribution.
 
 **Exit criteria (release):** v0.2.0 tag, binaries attached, `docs/api.md` and
 README reflect the nine plugins and the refreshed footprint.
