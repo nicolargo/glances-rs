@@ -6,6 +6,7 @@ pub mod security;
 
 use crate::collector::{EnsureError, ensure_plugin};
 use crate::plugins::PluginId;
+use crate::plugins::fields::{FieldInfo, fields};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -24,6 +25,7 @@ pub fn api_router(app: Arc<AppState>) -> Router {
         .route("/api/5/pluginslist", get(plugins_list))
         .route("/api/5/all", get(all_stats))
         .route("/api/5/alert", get(alert_history))
+        .route("/api/5/{plugin}/info", get(plugin_info))
         .route("/api/5/{plugin}", get(plugin_stats))
         .with_state(app.clone());
     security::apply_security(routes, app)
@@ -94,6 +96,69 @@ async fn plugin_stats(State(app): State<Arc<AppState>>, Path(name): Path<String>
         )
             .into_response(),
     }
+}
+
+/// `GET /api/5/{plugin}/info` — the static field schema (design spec
+/// 2026-08-02). Inert like `pluginslist`/`alert`: no wake, no store, no
+/// `503`. `default_thresholds` reflects the operator's configured global
+/// thresholds (config-only; no built-in defaults ship).
+async fn plugin_info(State(app): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+    let Some(id) = PluginId::parse(&name).filter(|id| app.is_registered(*id)) else {
+        return not_found(&name);
+    };
+    let mut out = Map::new();
+    for fi in fields(id) {
+        out.insert(fi.field.to_owned(), field_schema(&app, id, fi));
+    }
+    Json(Value::Object(out)).into_response()
+}
+
+fn field_schema(app: &AppState, id: PluginId, fi: &FieldInfo) -> Value {
+    let mut m = Map::new();
+    m.insert("description".into(), json!(fi.description));
+    m.insert("unit".into(), json!(fi.unit.as_str()));
+    if let Some(s) = fi.short_name {
+        m.insert("short_name".into(), json!(s));
+    }
+    if fi.primary_key {
+        m.insert("primary_key".into(), json!(true));
+    }
+    if fi.rate {
+        m.insert("rate".into(), json!(true));
+    }
+    if fi.internal {
+        m.insert("internal".into(), json!(true));
+    }
+    if fi.watched {
+        m.insert("watched".into(), json!(true));
+        m.insert("watch_direction".into(), json!(fi.direction.as_str()));
+        m.insert("prominent".into(), json!(fi.prominent));
+        if let Some(dt) = configured_thresholds(app, id, fi.field) {
+            m.insert("default_thresholds".into(), dt);
+        }
+    }
+    if let Some(nb) = fi.normalize_by {
+        m.insert("normalize_by".into(), json!(nb));
+    }
+    Value::Object(m)
+}
+
+/// The operator's configured global thresholds for `field` (`Some` limits
+/// only), or `None` when unconfigured. Per-item overrides are not reflected —
+/// `/info` is a per-field schema.
+fn configured_thresholds(app: &AppState, id: PluginId, field: &str) -> Option<Value> {
+    let t = app.config.plugins.get(id.as_str())?.thresholds.get(field)?;
+    let mut m = Map::new();
+    if let Some(c) = t.careful {
+        m.insert("careful".into(), json!(c));
+    }
+    if let Some(w) = t.warning {
+        m.insert("warning".into(), json!(w));
+    }
+    if let Some(cr) = t.critical {
+        m.insert("critical".into(), json!(cr));
+    }
+    (!m.is_empty()).then_some(Value::Object(m))
 }
 
 fn not_found(name: &str) -> Response {

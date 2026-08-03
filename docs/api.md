@@ -12,6 +12,7 @@
 | Route                    | Method | Response                                | Status codes |
 |--------------------------|--------|-----------------------------------------|--------------|
 | `/api/5/{plugin}`        | GET    | The plugin's payload in the v5 envelope (§4) | `200`, `404` unknown plugin, `503` collection did not start in time |
+| `/api/5/{plugin}/info`   | GET    | The plugin's static field schema, keyed by field name (§9) | `200` always, `404` unknown/disabled plugin; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
 | `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/api/5/alert`           | GET    | Array of alert events, most-recent last (§8.3) | `200` always, `[]` when empty; never `503` — read-only, does not wake or wait on a collector |
@@ -19,7 +20,7 @@
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
-`/api/5/token` (Basic auth only), `/api/5/{plugin}/info`, `/api/5/config`.
+`/api/5/token` (Basic auth only), `/api/5/config`.
 
 **Security (ARCHITECTURE.md §7).** The `/api/5/*` routes sit behind, in order,
 a CORS layer, a trusted-`Host` check and HTTP Basic auth. Added status codes:
@@ -544,3 +545,178 @@ contract (ARCHITECTURE.md §3.2, §5.2): with sporadic polling, a breach
 shorter than `min_duration` of *sustained active* observation may simply
 never commit — no client was watching closely enough for an alert to be
 meaningful.
+
+## 9. `GET /api/5/{plugin}/info` — field schema (v0.4.0)
+
+Static, per-field metadata for a plugin's payload — Glances v5's
+`fields_description` exposed as a REST route (ARCHITECTURE.md §5.7). Read-only
+and **inert**: it reads only the static field table and the config, never the
+store or the collector registry, never wakes or waits on a collector, and
+never returns `503` — the same class as `/api/5/alert` and `pluginslist`.
+
+**Shape.** An object keyed by **field name** (never by collection item), in
+the plugin's stable schema order. Each field carries a whitelist of keys — a
+key is present only when it applies to that field, absent otherwise:
+
+| key | type | when present |
+|---|---|---|
+| `description` | string | always |
+| `unit` | string | always — `bytes`, `percent`, `bytespers`, `bitpersecond`, `number`, `float`, `bool`, `string`, `seconds` |
+| `short_name` | string | when the field defines one |
+| `primary_key` | `true` | only on a collection plugin's key field |
+| `rate` | `true` | on per-second rate fields |
+| `internal` | `true` | on fields the UI hides but the API still exposes (e.g. `cpu.cpucore`) |
+| `watched` | `true` | on alertable fields (§8.1) |
+| `watch_direction` | `"high"` / `"low"` | on watched fields |
+| `prominent` | bool | on watched fields |
+| `default_thresholds` | `{careful?, warning?, critical?}` | on watched fields, only when configured (below) |
+| `normalize_by` | string | on fields compared as `value / divisor` (`cpucore` or `bytes_speed_rate_per_sec`) |
+
+**Omitted by design.** Glances also emits `history: true` and
+`strict_thresholds: true` on some fields. glances-rs implements neither a
+per-plugin history route nor strict-threshold semantics, so `/info` never
+emits those keys — it does not advertise a capability the server lacks.
+
+**`default_thresholds` reflects config, not built-ins.** Glances ships
+built-in default thresholds and always emits them on watched fields.
+glances-rs ships **none** (§8: config-only alerting, the deliberate v0.3.0
+conservatism divergence). For `/info`, `default_thresholds`:
+
+- reflects the operator's **configured global thresholds**
+  (`[plugins.<p>].thresholds.<field>`, §8.1) for that field;
+- is emitted only when configured — the key is **absent** otherwise, even on
+  a `watched: true` field (alertable but unconfigured is a normal state);
+- includes only the limits set to `Some` (a partial `[careful/warning/
+  critical]` configuration yields a partial object);
+- does **not** reflect `thresholds_by_item` overrides — `/info` is a
+  per-field schema, and item overrides are item-specific, outside it.
+
+`watched`, `watch_direction`, `prominent`, `rate`, `internal`, `normalize_by`,
+`unit`, `description`, `primary_key` and `short_name` are all **static** and
+always emitted for their field regardless of config; only
+`default_thresholds` is dynamic.
+
+**Status codes.** `200` with the field object, always — there is no `null`/
+empty state to wait out, because the schema does not depend on a collection
+cycle. `404` on an unknown or disabled plugin name (`{"detail": "unknown
+plugin '<name>'"}`), the same convention as `/api/5/{plugin}` (§6.2); Glances
+returns `400` for this case — a pre-existing, documented divergence.
+
+**Field-set invariant.** `/info` describes the fields **glances-rs emits**,
+not Glances' field list: every key present in a plugin's live data response
+(except the envelope keys `time_since_update`/`_levels`) is documented in
+`/info`, and — on Linux, where the full field set is present — every `/info`
+key except the conditional `alias` appears in the live data. A field with no
+Glances v5 counterpart (e.g. `network.bytes_all`, `network.speed`, `fs.alias`)
+still gets a full, authored `description`.
+
+### 9.1 Example — `mem/info` (scalar plugin)
+
+```json
+{
+  "total": {
+    "description": "Total physical memory available.",
+    "unit": "bytes"
+  },
+  "available": {
+    "description": "Actual amount of available memory that can be given instantly to processes that request more memory; calculated by summing different memory values depending on the platform (e.g. free + buffers + cached on Linux). Suitable for monitoring actual memory usage in a cross-platform fashion.",
+    "unit": "bytes",
+    "short_name": "avail"
+  },
+  "percent": {
+    "description": "Percentage usage calculated as (total - available) / total * 100.",
+    "unit": "percent",
+    "watched": true,
+    "watch_direction": "high",
+    "prominent": true
+  },
+  "used": {
+    "description": "Memory used, calculated differently depending on the platform and designed for informational purposes only.",
+    "unit": "bytes"
+  },
+  "free": {
+    "description": "Memory not being used at all (zeroed) that is readily available; note that this does not reflect the actual memory available — use `available` instead.",
+    "unit": "bytes"
+  },
+  "active": {
+    "description": "(UNIX) Memory currently in use or very recently used, resident in RAM.",
+    "unit": "bytes"
+  },
+  "inactive": {
+    "description": "(UNIX) Memory that is marked as not used.",
+    "unit": "bytes",
+    "short_name": "inacti"
+  },
+  "buffers": {
+    "description": "(Linux, BSD) Cache for items like filesystem metadata.",
+    "unit": "bytes",
+    "short_name": "buffer"
+  },
+  "cached": {
+    "description": "(Linux, BSD) Cache for various things (including ZFS cache).",
+    "unit": "bytes"
+  }
+}
+```
+
+`percent` has no `default_thresholds` key under the default config (no
+built-in thresholds ship); configuring
+`[plugins.mem.thresholds.percent]` adds it, partial-aware, per the rules
+above.
+
+### 9.2 Example — `network/info` (collection + rate plugin)
+
+```json
+{
+  "interface_name": {
+    "description": "Network interface name.",
+    "unit": "string",
+    "primary_key": true
+  },
+  "bytes_recv": {
+    "description": "Bytes received per second.",
+    "unit": "bytespers",
+    "rate": true,
+    "watched": true,
+    "watch_direction": "high",
+    "prominent": false,
+    "normalize_by": "bytes_speed_rate_per_sec"
+  },
+  "bytes_sent": {
+    "description": "Bytes sent per second.",
+    "unit": "bytespers",
+    "rate": true,
+    "watched": true,
+    "watch_direction": "high",
+    "prominent": false,
+    "normalize_by": "bytes_speed_rate_per_sec"
+  },
+  "bytes_all": {
+    "description": "Total bytes received and sent per second (bytes_recv + bytes_sent).",
+    "unit": "bytespers",
+    "rate": true
+  },
+  "alias": {
+    "description": "Operator-defined display alias for the interface; present only when configured.",
+    "unit": "string"
+  },
+  "is_up": {
+    "description": "Whether the interface is up.",
+    "unit": "bool"
+  },
+  "speed": {
+    "description": "Maximum interface link speed in bits per second (0 when the OS does not report it).",
+    "unit": "bitpersecond"
+  },
+  "bytes_speed_rate_per_sec": {
+    "description": "Estimated per-direction bandwidth capacity in bytes/s. Computed from the interface link speed (Mbit/s) under a full-duplex split assumption: speed_mbits * 1e6 / 8 / 2. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
+    "unit": "bytespers"
+  }
+}
+```
+
+Note the divergence from Glances v5's `network` field set (§2 of the design
+spec, `docs/superpowers/specs/2026-08-02-info-endpoint-design.md`):
+glances-rs does not collect `errors_in`/`errors_out`/`dropped_in`/
+`dropped_out`, so they are absent from both the data response and `/info` —
+`/info` mirrors what the server actually emits, never Glances' upstream list.

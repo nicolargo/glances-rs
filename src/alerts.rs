@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{Config, Thresholds};
 use crate::plugins::PluginId;
+use crate::plugins::fields::{Direction, FieldInfo, alert_fields};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -34,15 +35,6 @@ impl Level {
             Level::Critical => "critical",
         }
     }
-}
-
-/// Whether a field alerts on high values (cpu%, fs%) or low ones (free
-/// space). Every v0.3.0 field is `High`; `Low` is engine-complete and tested
-/// so a low-direction field computes correctly the day it is added (spec §5.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    High,
-    Low,
 }
 
 /// Resolved limits for one `(item, field)` after the global+item merge.
@@ -162,70 +154,6 @@ pub(crate) fn resolve(
     }
 }
 
-/// One alertable field's static metadata (spec §4.6). `prominent` is copied
-/// verbatim from Glances v5 for UI parity; `direction` is `High` for every
-/// v0.3.0 field; `normalize_by` names a divisor field for rate-vs-capacity
-/// comparison (network only).
-pub(crate) struct AlertField {
-    pub field: &'static str,
-    pub prominent: bool,
-    pub direction: Direction,
-    pub normalize_by: Option<&'static str>,
-}
-
-const fn af(field: &'static str, prominent: bool) -> AlertField {
-    AlertField {
-        field,
-        prominent,
-        direction: Direction::High,
-        normalize_by: None,
-    }
-}
-
-const MEM_FIELDS: &[AlertField] = &[af("percent", true)];
-const FS_FIELDS: &[AlertField] = &[af("percent", false)];
-const LOAD_FIELDS: &[AlertField] = &[af("min5", false), af("min15", true)];
-const MEMSWAP_FIELDS: &[AlertField] = &[af("percent", true), af("sin", false), af("sout", false)];
-const DISKIO_FIELDS: &[AlertField] = &[af("read_bytes", false), af("write_bytes", false)];
-const CPU_FIELDS: &[AlertField] = &[
-    af("total", true),
-    af("system", false),
-    af("user", false),
-    af("iowait", false),
-    af("steal", true),
-    af("ctx_switches", true),
-];
-const NETWORK_FIELDS: &[AlertField] = &[
-    AlertField {
-        field: "bytes_recv",
-        prominent: false,
-        direction: Direction::High,
-        normalize_by: Some("bytes_speed_rate_per_sec"),
-    },
-    AlertField {
-        field: "bytes_sent",
-        prominent: false,
-        direction: Direction::High,
-        normalize_by: Some("bytes_speed_rate_per_sec"),
-    },
-];
-const EMPTY_FIELDS: &[AlertField] = &[];
-
-/// Alertable fields per plugin. Only these emit `_levels`, and only when a
-/// threshold is configured (spec §4.6). Empty slice = nothing to alert on.
-pub(crate) fn alert_fields(id: PluginId) -> &'static [AlertField] {
-    match id {
-        PluginId::Mem => MEM_FIELDS,
-        PluginId::Fs => FS_FIELDS,
-        PluginId::Load => LOAD_FIELDS,
-        PluginId::MemSwap => MEMSWAP_FIELDS,
-        PluginId::Diskio => DISKIO_FIELDS,
-        PluginId::Cpu => CPU_FIELDS,
-        PluginId::Network => NETWORK_FIELDS,
-        PluginId::System | PluginId::Uptime => EMPTY_FIELDS,
-    }
-}
-
 /// Format a wall-clock instant as `YYYY-MM-DDThh:mm:ssZ` (UTC, second
 /// precision). Hand-rolled to avoid a chrono/time dependency (footprint
 /// mandate). The event `ts` uses this; durations use `Instant` elsewhere.
@@ -307,8 +235,8 @@ impl Alerts {
     /// transitions to the journal. No-op for plugins with no alertable fields,
     /// or with no thresholds configured at all (the default).
     pub fn observe(&self, config: &Config, id: PluginId, value: &mut Value) {
-        let fields = alert_fields(id);
-        if fields.is_empty() {
+        // No alertable fields for this plugin (e.g. system, uptime): nothing to do.
+        if alert_fields(id).next().is_none() {
             return;
         }
         // Footprint mandate: the default config has no thresholds anywhere, and
@@ -354,13 +282,13 @@ impl Alerts {
 
         // Compute levels per (item, field), collect observations + the new
         // `_levels` JSON, and (for collections) the set of live item keys.
-        let mut observations: Vec<(Option<String>, &'static AlertField, Level, f64)> = Vec::new();
+        let mut observations: Vec<(Option<String>, &'static FieldInfo, Level, f64)> = Vec::new();
 
         match id.key_field() {
             None => {
                 // Scalar plugin: fields at the payload top level.
                 let mut levels = Map::new();
-                for af in fields {
+                for af in alert_fields(id) {
                     if let Some((level, raw)) = level_for(config, id, None, af, value) {
                         levels.insert(af.field.to_string(), level_entry(level, af.prominent));
                         observations.push((None, af, level, raw));
@@ -379,7 +307,7 @@ impl Alerts {
                         };
                         live.push(pk.clone());
                         let mut field_levels = Map::new();
-                        for af in fields {
+                        for af in alert_fields(id) {
                             if let Some((level, raw)) = level_for(config, id, Some(&pk), af, item) {
                                 field_levels
                                     .insert(af.field.to_string(), level_entry(level, af.prominent));
@@ -442,7 +370,7 @@ fn level_for(
     config: &Config,
     id: PluginId,
     item: Option<&str>,
-    af: &AlertField,
+    af: &FieldInfo,
     stats: &Value,
 ) -> Option<(Level, f64)> {
     let raw = stats.get(af.field).and_then(Value::as_f64)?;
@@ -479,7 +407,7 @@ fn build_event(
     hostname: &str,
     id: PluginId,
     key: Option<&str>,
-    af: &AlertField,
+    af: &FieldInfo,
     tr: &Transition,
     value: f64,
     ts: SystemTime,
@@ -573,6 +501,23 @@ mod tests {
         });
         alerts.observe(&config, PluginId::Network, &mut payload);
         assert_eq!(payload["_levels"], json!({}));
+    }
+
+    #[test]
+    fn cpucore_normalizes_load_level() {
+        // load.min15 threshold on the normalized (per-core) value.
+        let config = Config::from_toml(
+            "[plugins.load.thresholds.min15]\ncareful = 1.0\nwarning = 2.0\ncritical = 4.0\n",
+        )
+        .unwrap();
+        // 8.0 / 4 cores = 2.0 -> warning (not critical, which raw 8.0 would be).
+        let stats = serde_json::json!({ "min15": 8.0, "cpucore": 4 });
+        let af = crate::plugins::fields::alert_fields(PluginId::Load)
+            .find(|f| f.field == "min15")
+            .unwrap();
+        let (level, raw) = level_for(&config, PluginId::Load, None, af, &stats).unwrap();
+        assert_eq!(level, Level::Warning);
+        assert_eq!(raw, 8.0); // event carries the undivided value
     }
 
     #[test]
@@ -706,16 +651,16 @@ mod tests {
     #[test]
     fn alert_fields_match_emitted_payload_fields() {
         // Spot-check the static table against the spec §4.6 prominent values.
-        let mem = alert_fields(PluginId::Mem);
+        let mem: Vec<&FieldInfo> = alert_fields(PluginId::Mem).collect();
         assert_eq!(mem.len(), 1);
         assert_eq!(mem[0].field, "percent");
         assert!(mem[0].prominent);
 
-        let fs = alert_fields(PluginId::Fs);
+        let fs: Vec<&FieldInfo> = alert_fields(PluginId::Fs).collect();
         assert_eq!(fs[0].field, "percent");
         assert!(!fs[0].prominent);
 
-        let net = alert_fields(PluginId::Network);
+        let net: Vec<&FieldInfo> = alert_fields(PluginId::Network).collect();
         assert!(
             net.iter()
                 .all(|f| f.normalize_by == Some("bytes_speed_rate_per_sec"))
@@ -723,8 +668,8 @@ mod tests {
         assert!(net.iter().any(|f| f.field == "bytes_recv"));
 
         // scalar/no-numeric plugins have no alertable fields.
-        assert!(alert_fields(PluginId::System).is_empty());
-        assert!(alert_fields(PluginId::Uptime).is_empty());
+        assert!(alert_fields(PluginId::System).next().is_none());
+        assert!(alert_fields(PluginId::Uptime).next().is_none());
     }
 
     #[test]

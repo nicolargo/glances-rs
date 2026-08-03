@@ -3,6 +3,7 @@
 
 pub mod cpu;
 pub mod diskio;
+pub mod fields;
 pub mod filter;
 pub mod fs;
 pub mod load;
