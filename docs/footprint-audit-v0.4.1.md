@@ -22,6 +22,15 @@
 > the brief carried forward (rest 4.0 MiB, 100 req/s 5.3 MiB / 1.8% CPU,
 > binary 2.233 MiB / 2,341,504 B), and attributes the deltas to each change
 > as honestly as the measurement precision allows.
+>
+> **Baseline lineage.** That v0.4.0 row is a *same-session re-measurement* of
+> the v0.4.0 binary taken at the start of this pass, not the figures in
+> `docs/footprint-audit-v0.4.0.md` (rest 3.4 MiB, 100 req/s 6.4 MiB / 1.3%).
+> The two v0.4.0 measurements differ by more than the ±0.5 MiB noise band
+> because absolute RSS/CPU depend on machine load at measurement time — which
+> is exactly why the load-bearing conclusions here rest on *same-session
+> controlled A/Bs* (Task 3's `opt-level` 3-vs-s run), not on cross-session
+> absolute comparisons.
 
 Measured with `scripts/footprint.sh` against `/api/5/all` (nine plugins,
 default config, no alert thresholds configured), release binary
