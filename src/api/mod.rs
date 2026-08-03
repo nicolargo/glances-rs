@@ -9,10 +9,11 @@ use crate::plugins::PluginId;
 use crate::plugins::fields::{FieldInfo, fields};
 use crate::state::AppState;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use bytes::Bytes;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use tokio::task::JoinSet;
@@ -51,7 +52,7 @@ async fn plugins_list(State(app): State<Arc<AppState>>) -> Json<Vec<&'static str
 /// plugin that errs (timeout or not-registered) is simply absent from the
 /// object and the response is still `200` — an aggregate route must not
 /// collapse for one slow component.
-async fn all_stats(State(app): State<Arc<AppState>>) -> Json<Map<String, Value>> {
+async fn all_stats(State(app): State<Arc<AppState>>) -> Response {
     let mut set = JoinSet::new();
     for id in PluginId::ALL {
         if !app.is_registered(id) {
@@ -61,15 +62,40 @@ async fn all_stats(State(app): State<Arc<AppState>>) -> Json<Map<String, Value>>
         set.spawn(async move { (id, ensure_plugin(&app, id).await) });
     }
 
-    let mut out = Map::new();
+    let mut parts: Vec<(&'static str, Bytes)> = Vec::new();
     while let Some(joined) = set.join_next().await {
-        // serde_json::Map is a BTreeMap here (no preserve_order feature),
-        // so keys come out sorted regardless of completion order.
-        if let Ok((id, Ok(value))) = joined {
-            out.insert(id.as_str().to_owned(), value);
+        if let Ok((id, Ok(body))) = joined {
+            parts.push((id.as_str(), body));
         }
     }
-    Json(out)
+    // Keys must come out sorted, matching the previous BTreeMap-backed
+    // serde_json::Map key order (no preserve_order feature).
+    parts.sort_by_key(|(name, _)| *name);
+
+    // Each `body` is already a serialized JSON object; compose the
+    // aggregate without re-parsing or re-serializing any plugin.
+    let mut out = Vec::with_capacity(
+        2 + parts
+            .iter()
+            .map(|(n, b)| n.len() + b.len() + 4)
+            .sum::<usize>(),
+    );
+    out.push(b'{');
+    for (i, (name, body)) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.push(b'"');
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(b"\":");
+        out.extend_from_slice(body);
+    }
+    out.push(b'}');
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        Bytes::from(out),
+    )
+        .into_response()
 }
 
 /// `GET /api/5/alert` — the alert event journal (spec §4.4). Read-only: it
@@ -85,7 +111,7 @@ async fn plugin_stats(State(app): State<Arc<AppState>>, Path(name): Path<String>
         return not_found(&name);
     };
     match ensure_plugin(&app, id).await {
-        Ok(value) => Json(value).into_response(),
+        Ok(body) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
         Err(EnsureError::NotRegistered) => not_found(&name),
         Err(EnsureError::Timeout) => (
             StatusCode::SERVICE_UNAVAILABLE,

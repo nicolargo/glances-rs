@@ -10,6 +10,7 @@ repository = "https://github.com/nicolargo/glances-rs"
 [dependencies]
 axum = "0.8.9"
 base64 = "0.22.1"
+bytes = "1"
 constant_time_eq = "0.4.2"
 regex-lite = "0.1.9"
 serde = { version = "1.0.228", features = ["derive"] }
