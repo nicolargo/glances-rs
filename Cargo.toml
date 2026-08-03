@@ -31,7 +31,7 @@ libc = "0.2.186"
 # Footprint-first release profile (ARCHITECTURE.md §9). `panic = "abort"` is a
 # deliberate choice revisited in Phase 7 of DEVELOPMENT_PLAN.md.
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
