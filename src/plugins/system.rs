@@ -47,7 +47,6 @@ fn platform_bits() -> &'static str {
     }
 }
 
-#[async_trait::async_trait]
 impl Plugin for SystemPlugin {
     type State = Clock;
 

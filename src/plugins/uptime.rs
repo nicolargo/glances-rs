@@ -27,7 +27,6 @@ pub struct UptimeState {
     clock: Clock,
 }
 
-#[async_trait::async_trait]
 impl Plugin for UptimePlugin {
     type State = UptimeState;
 

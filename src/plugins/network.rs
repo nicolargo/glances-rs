@@ -70,7 +70,6 @@ impl Default for NetworkState {
     }
 }
 
-#[async_trait::async_trait]
 impl Plugin for NetworkPlugin {
     type State = NetworkState;
 

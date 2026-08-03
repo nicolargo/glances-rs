@@ -146,7 +146,6 @@ impl PluginId {
 /// One collectable metric source (§5.3). Implementations are stateless
 /// objects: all inter-cycle memory lives in `State`, owned by the loop
 /// task and passed back by `&mut` — exclusive by construction, no lock.
-#[async_trait::async_trait]
 pub trait Plugin: Send + Sync + 'static {
     /// Inter-cycle memory. `()` for an instantaneous plugin, a raw-sample
     /// type for a rate plugin (§5.4).
@@ -158,8 +157,13 @@ pub trait Plugin: Send + Sync + 'static {
     fn refresh(&self) -> Duration;
 
     /// One collection cycle: update `state`, return the public JSON
-    /// (shape frozen in docs/api.md §5).
-    async fn collect(&self, state: &mut Self::State) -> serde_json::Value;
+    /// (shape frozen in docs/api.md §5). `plugin_loop` is generic and
+    /// `Plugin` is never used as `dyn`, so this RPITIT method needs no
+    /// boxing (native async, no `async-trait`).
+    fn collect(
+        &self,
+        state: &mut Self::State,
+    ) -> impl std::future::Future<Output = serde_json::Value> + Send;
 }
 
 #[cfg(test)]

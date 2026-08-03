@@ -24,7 +24,7 @@ use crate::plugins::system::SystemPlugin;
 use crate::plugins::uptime::UptimePlugin;
 use crate::plugins::{Plugin, PluginId};
 use crate::state::{AppState, Collector};
-use serde_json::Value;
+use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -39,7 +39,7 @@ pub enum EnsureError {
 /// Wake the plugin if needed and return its snapshot. The triggering
 /// request waits for the first published cycle (§3.1): the API never
 /// returns null or empty data (§6.2).
-pub async fn ensure_plugin(app: &Arc<AppState>, id: PluginId) -> Result<Value, EnsureError> {
+pub async fn ensure_plugin(app: &Arc<AppState>, id: PluginId) -> Result<Bytes, EnsureError> {
     // The API layer filters unregistered plugins already; this is defense
     // in depth at the engine level.
     if !app.is_registered(id) {
@@ -135,7 +135,11 @@ pub async fn plugin_loop<P: Plugin>(plugin: P, app: Arc<AppState>, ready: watch:
         // so the stored snapshot carries decoration and /api/5/alert sees
         // every cycle (spec §3.1, §4.1).
         app.alerts.observe(&app.config, id, &mut value);
-        app.publish(id, value).await;
+        // Serialize once per cycle; requests then serve these bytes as a
+        // cheap refcount clone instead of deep-cloning + re-serializing
+        // the Value per request (footprint pass, H2).
+        let body = Bytes::from(serde_json::to_vec(&value).expect("Value serializes"));
+        app.publish(id, body).await;
         ready.send_replace(true);
 
         tokio::time::sleep(refresh).await;
@@ -203,7 +207,8 @@ mod tests {
         let app = AppState::new(fast_config());
 
         // Cold wake: waits for the first cycle, returns real data.
-        let value = ensure_plugin(&app, PluginId::Mem).await.unwrap();
+        let body = ensure_plugin(&app, PluginId::Mem).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(value.is_object());
         assert_eq!(app.active_collectors().await, 1);
 
@@ -214,7 +219,8 @@ mod tests {
         assert!(app.snapshot(PluginId::Mem).await.is_some());
 
         // Re-wake works.
-        let value = ensure_plugin(&app, PluginId::Mem).await.unwrap();
+        let body = ensure_plugin(&app, PluginId::Mem).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(value.is_object());
         assert_eq!(app.active_collectors().await, 1);
     }

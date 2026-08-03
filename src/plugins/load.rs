@@ -29,7 +29,6 @@ pub(crate) fn logical_core_count() -> usize {
     sys.cpus().len()
 }
 
-#[async_trait::async_trait]
 impl Plugin for LoadPlugin {
     type State = Clock;
 

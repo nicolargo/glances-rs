@@ -1,6 +1,6 @@
 [package]
 name = "glances-rs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.94"
 description = "Lightweight monitoring server with a Glances-compatible REST API and a minimal CPU/RAM footprint"
@@ -8,9 +8,9 @@ license = "MIT"
 repository = "https://github.com/nicolargo/glances-rs"
 
 [dependencies]
-async-trait = "0.1.89"
 axum = "0.8.9"
 base64 = "0.22.1"
+bytes = "1"
 constant_time_eq = "0.4.2"
 regex-lite = "0.1.9"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -31,7 +31,7 @@ libc = "0.2.186"
 # Footprint-first release profile (ARCHITECTURE.md §9). `panic = "abort"` is a
 # deliberate choice revisited in Phase 7 of DEVELOPMENT_PLAN.md.
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true

@@ -46,7 +46,6 @@ pub struct CpuState {
     sys: System,
 }
 
-#[async_trait::async_trait]
 impl Plugin for CpuPlugin {
     type State = CpuState;
 

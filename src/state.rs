@@ -11,7 +11,7 @@
 use crate::alerts::Alerts;
 use crate::config::Config;
 use crate::plugins::PluginId;
-use serde_json::Value;
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -29,7 +29,7 @@ pub struct AppState {
     /// Monotonic origin for the `last_request` timestamps — immune to
     /// system clock changes.
     started: Instant,
-    store: RwLock<HashMap<PluginId, Value>>,
+    store: RwLock<HashMap<PluginId, Bytes>>,
     last_request: HashMap<PluginId, AtomicI64>,
     pub(crate) collectors: Mutex<HashMap<PluginId, Collector>>,
     pub alerts: Alerts,
@@ -70,13 +70,15 @@ impl AppState {
     }
 
     /// Publish a collection cycle (the loop is the store's only writer).
-    pub async fn publish(&self, id: PluginId, value: Value) {
-        self.store.write().await.insert(id, value);
+    /// `body` is the plugin's payload pre-serialized once per cycle; a
+    /// `Bytes` clone below is a cheap refcount bump, not a deep copy.
+    pub async fn publish(&self, id: PluginId, body: Bytes) {
+        self.store.write().await.insert(id, body);
     }
 
     /// Last published snapshot. Intentionally survives collector stops
     /// (§3.2): the memory cost is a few KB and rates can restart instantly.
-    pub async fn snapshot(&self, id: PluginId) -> Option<Value> {
+    pub async fn snapshot(&self, id: PluginId) -> Option<Bytes> {
         self.store.read().await.get(&id).cloned()
     }
 

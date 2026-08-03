@@ -69,7 +69,6 @@ fn usage(size: u64, free: u64) -> (u64, f64) {
     (used, percent)
 }
 
-#[async_trait::async_trait]
 impl Plugin for FsPlugin {
     type State = FsState;
 
