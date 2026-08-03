@@ -36,7 +36,6 @@ pub struct MemState {
     sys: System,
 }
 
-#[async_trait::async_trait]
 impl Plugin for MemPlugin {
     type State = MemState;
 

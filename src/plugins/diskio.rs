@@ -65,7 +65,6 @@ pub struct DiskioState {
     clock: Clock,
 }
 
-#[async_trait::async_trait]
 impl Plugin for DiskioPlugin {
     type State = DiskioState;
 

@@ -67,7 +67,6 @@ fn per_sec(delta: u64, elapsed: f64) -> f64 {
     }
 }
 
-#[async_trait::async_trait]
 impl Plugin for MemSwapPlugin {
     type State = MemSwapState;
 
