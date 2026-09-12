@@ -26,6 +26,7 @@ pub fn api_router(app: Arc<AppState>) -> Router {
         .route("/api/5/pluginslist", get(plugins_list))
         .route("/api/5/all", get(all_stats))
         .route("/api/5/alert", get(alert_history))
+        .route("/api/5/all/info", get(all_info))
         .route("/api/5/{plugin}/info", get(plugin_info))
         .route("/api/5/{plugin}", get(plugin_stats))
         .with_state(app.clone());
@@ -137,6 +138,24 @@ async fn plugin_info(State(app): State<Arc<AppState>>, Path(name): Path<String>)
         out.insert(fi.field.to_owned(), field_schema(&app, id, fi));
     }
     Json(Value::Object(out)).into_response()
+}
+
+/// `GET /api/5/all/info` — every registered plugin's field schema at once,
+/// keyed by plugin name (the `/all` analogue of `/{plugin}/info`). Inert:
+/// static metadata + config only, never wakes a collector.
+async fn all_info(State(app): State<Arc<AppState>>) -> Json<Value> {
+    let mut out = Map::new();
+    for id in PluginId::ALL {
+        if !app.is_registered(id) {
+            continue;
+        }
+        let mut fields_obj = Map::new();
+        for fi in fields(id) {
+            fields_obj.insert(fi.field.to_owned(), field_schema(&app, id, fi));
+        }
+        out.insert(id.as_str().to_owned(), Value::Object(fields_obj));
+    }
+    Json(Value::Object(out))
 }
 
 fn field_schema(app: &AppState, id: PluginId, fi: &FieldInfo) -> Value {

@@ -120,6 +120,22 @@ async fn default_thresholds_reflects_config() {
 }
 
 #[tokio::test]
+async fn all_info_maps_every_registered_plugin() {
+    let (status, body) = info(Config::default(), "all").await; // GET /api/5/all/info
+    // NOTE: `info()` builds the URL as /api/5/{arg}/info, so arg "all" hits /api/5/all/info.
+    assert_eq!(status, StatusCode::OK);
+    // mem is scalar, present with its percent field schema; network present with hidden.
+    assert_eq!(body["mem"]["percent"]["unit"], "percent");
+    assert_eq!(body["network"]["interface_name"]["primary_key"], true);
+    // every registered plugin appears as a key
+    for p in [
+        "mem", "cpu", "load", "network", "system", "uptime", "memswap", "fs", "diskio",
+    ] {
+        assert!(body.get(p).is_some(), "missing {p}");
+    }
+}
+
+#[tokio::test]
 async fn unknown_plugin_is_404() {
     let (status, _) = info(Config::default(), "nope").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
