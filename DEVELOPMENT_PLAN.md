@@ -631,6 +631,51 @@ allocates only per call, no new dependency).
 
 ---
 
+# v0.4.2 — Glances v5 realignment
+
+> Everything above shipped as **v0.4.1** (footprint pass: `current_thread`
+> runtime, per-cycle serialization, `opt-level = "s"`). v0.4.2 has one theme:
+> **realign the live payload with a current Glances v5 `develop-v5` server**,
+> following up on drift surfaced by a maintainer comparison. Full audit:
+> `docs/audit-realignment-glances-v5-2026-09.md`.
+
+- [x] **`short_name`** added to `/info` for the fields Glances v5 now defines
+      one for but glances-rs's `fields.rs` table was missing: `load.min1`
+      (`"1 min"`), `load.min5` (`"5 min"`), `load.min15` (`"15 min"`),
+      `network.interface_name` (`"interface"`), `network.bytes_recv`
+      (`"Rx/s"`), `network.bytes_sent` (`"Tx/s"`). `/info`-only metadata — no
+      data-field change.
+- [x] **`hidden`** field added to `network` and `diskio` item payloads (and
+      their `/info`): a generic, always-`false` display-filter flag mirroring
+      Glances v5's value-based `hide_zero` filter. glances-rs already filters
+      by **name** (`show`/`hide` regexes) before an item is ever emitted, so
+      there is nothing left to hide by value — the field is emitted purely
+      for payload-shape parity. Additive; both commits kept the
+      `every_emitted_field_is_documented` invariant green.
+- [x] **`GET /api/5/all/info`** — the `/all` analogue of `/{plugin}/info`
+      (§9.3 of `docs/api.md`): every registered plugin's field schema in one
+      object, keyed by plugin name. Reuses the existing `field_schema`/
+      `fields()` helpers verbatim — no new schema-building logic. Inert, same
+      read-only class as `/api/5/alert` and `/api/5/{plugin}/info`.
+- [x] **`/api/5/limits` — deliberately deferred, config-only stands.** The
+      audit's Gap 3 considered exposing a Glances-style global limits route
+      and/or shipping built-in default thresholds. Both are **out of scope**
+      for v0.4.2: glances-rs has no built-in defaults to expose (§8 Alerting
+      is config-only, the v0.3.0 conservatism divergence — ARCHITECTURE.md
+      §5.6/§8.1), so a `/limits` route would either be empty by default or
+      require introducing built-ins purely to populate it, which is a
+      default-behaviour change, not a payload-parity fix. The existing
+      per-field `default_thresholds` in `/info` (§9) remains the closest
+      equivalent and already reflects whatever the operator has configured.
+
+**Tests:** `tests/info.rs` — `network_info_has_hidden_and_short_names`,
+`diskio_info_has_hidden`, `all_info_maps_every_registered_plugin`; full
+existing suite stays green (additive only, no existing field value changed).
+
+**Exit criteria:** `docs/api.md` §1/§5.4/§5.9/§9 document `hidden`, the new
+`short_name`s and `/api/5/all/info` field-for-field; `make check` green;
+version bumped to `0.4.2`.
+
 ## Out of scope (deferred beyond v0.3.0)
 
 Tracked for later iterations, deliberately **not** in v0.3.0:

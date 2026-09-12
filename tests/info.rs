@@ -74,6 +74,22 @@ async fn network_info_collection_shape() {
 }
 
 #[tokio::test]
+async fn network_info_has_hidden_and_short_names() {
+    let (_, body) = info(Config::default(), "network").await;
+    assert_eq!(body["hidden"]["unit"], "bool");
+    assert_eq!(body["hidden"]["internal"], true);
+    assert_eq!(body["interface_name"]["short_name"], "interface");
+    assert_eq!(body["bytes_recv"]["short_name"], "Rx/s");
+}
+
+#[tokio::test]
+async fn diskio_info_has_hidden() {
+    let (_, body) = info(Config::default(), "diskio").await;
+    assert_eq!(body["hidden"]["unit"], "bool");
+    assert_eq!(body["hidden"]["internal"], true);
+}
+
+#[tokio::test]
 async fn cpu_info_internal_and_no_unimplemented_keys() {
     let (_, body) = info(Config::default(), "cpu").await;
     assert_eq!(body["cpucore"]["internal"], true);
@@ -101,6 +117,22 @@ async fn default_thresholds_reflects_config() {
     assert_eq!(dt["critical"], 90.0);
     // partial: careful was not configured -> absent.
     assert!(dt.get("careful").is_none());
+}
+
+#[tokio::test]
+async fn all_info_maps_every_registered_plugin() {
+    let (status, body) = info(Config::default(), "all").await; // GET /api/5/all/info
+    // NOTE: `info()` builds the URL as /api/5/{arg}/info, so arg "all" hits /api/5/all/info.
+    assert_eq!(status, StatusCode::OK);
+    // mem is scalar, present with its percent field schema; network present with hidden.
+    assert_eq!(body["mem"]["percent"]["unit"], "percent");
+    assert_eq!(body["network"]["interface_name"]["primary_key"], true);
+    // every registered plugin appears as a key
+    for p in [
+        "mem", "cpu", "load", "network", "system", "uptime", "memswap", "fs", "diskio",
+    ] {
+        assert!(body.get(p).is_some(), "missing {p}");
+    }
 }
 
 #[tokio::test]

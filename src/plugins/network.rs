@@ -184,6 +184,7 @@ fn step(
                 "bytes_recv": per_sec(recv, elapsed),
                 "bytes_sent": per_sec(sent, elapsed),
                 "bytes_all": per_sec(all, elapsed),
+                "hidden": false,
             });
             // alias only when configured for this interface (Glances v5).
             if let Some(a) = alias.get(name) {

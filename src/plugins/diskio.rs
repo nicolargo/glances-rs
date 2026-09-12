@@ -150,6 +150,7 @@ fn step(
                 "write_count": per_sec(wc.saturating_sub(pwc), elapsed),
                 "read_bytes": per_sec(rb.saturating_sub(prb), elapsed),
                 "write_bytes": per_sec(wb.saturating_sub(pwb), elapsed),
+                "hidden": false,
             });
             // alias only when configured for this disk (matching Glances v5).
             if let Some(a) = alias.get(name) {

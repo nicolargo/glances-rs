@@ -13,6 +13,7 @@
 |--------------------------|--------|-----------------------------------------|--------------|
 | `/api/5/{plugin}`        | GET    | The plugin's payload in the v5 envelope (§4) | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/{plugin}/info`   | GET    | The plugin's static field schema, keyed by field name (§9) | `200` always, `404` unknown/disabled plugin; never `503` — read-only, does not wake or wait on a collector |
+| `/api/5/all/info`        | GET    | Object: `{ "<plugin>": <field schema>, … }` for every registered plugin — the `/all` analogue of `/{plugin}/info` (§9.3) | `200` always; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
 | `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/api/5/alert`           | GET    | Array of alert events, most-recent last (§8.3) | `200` always, `[]` when empty; never `503` — read-only, does not wake or wait on a collector |
@@ -20,7 +21,11 @@
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
-`/api/5/token` (Basic auth only), `/api/5/config`.
+`/api/5/token` (Basic auth only), `/api/5/config`. `/api/5/limits` is also
+deliberately not served: glances-rs ships no built-in default thresholds
+(§8 Alerting is config-only), so there is no global limits table to expose —
+the per-field `default_thresholds` already surfaced in `/info` (§9) is the
+closest equivalent, and it reflects only what the operator configured.
 
 **Security (ARCHITECTURE.md §7).** The `/api/5/*` routes sit behind, in order,
 a CORS layer, a trusted-`Host` check and HTTP Basic auth. Added status codes:
@@ -193,7 +198,8 @@ One element per interface; primary key `interface_name`:
       "bytes_all":      1533.6,
       "speed":          0,
       "bytes_speed_rate_per_sec": 62500000,
-      "is_up":          true
+      "is_up":          true,
+      "hidden":         false
     }
   ],
   "time_since_update": 2.004,
@@ -203,6 +209,11 @@ One element per interface; primary key `interface_name`:
 
 - `bytes_recv`/`bytes_sent`/`bytes_all` are **per-second rates** (bytes/s, 1
   decimal). No `_gauge`/`_rate_per_sec` companions.
+- `hidden` — a generic display-filter flag mirroring Glances v5's
+  value-based `hide_zero` filter. glances-rs filters interfaces by **name**
+  (`show`/`hide`, above) rather than by value, so it never has a reason to
+  hide an item it still reports — `hidden` is therefore always `false`;
+  emitted only for payload-shape parity with Glances v5.
 - Interfaces filtered by the configured `show`/`hide` regexes on
   `interface_name`, applied before rate computation. **Default hide:**
   `docker.*` and `lo` (set an explicit `hide` in config to override).
@@ -335,7 +346,8 @@ One element per disk; primary key `disk_name`:
       "read_count":  6.0,
       "write_count": 20.0,
       "read_bytes":  24576.0,
-      "write_bytes": 81920.0
+      "write_bytes": 81920.0,
+      "hidden":      false
     }
   ],
   "time_since_update": 2.004,
@@ -348,6 +360,9 @@ One element per disk; primary key `disk_name`:
   over `time_since_update` (§4). `*_bytes` derive from sectors × 512. A disk
   absent from the previous sample is skipped for one cycle; a removed disk
   drops out immediately (§8.1).
+- `hidden` — same generic, always-`false` display-filter flag as `network`
+  (§5.4): glances-rs hides disks by name, not by value, so this is emitted
+  for payload-shape parity only.
 - Disks are filtered by the configured `show`/`hide` regexes on `disk_name`.
   **Default hide:** `loop.*` and `/dev/loop.*`. `alias` from
   `[plugins.diskio].alias` is added **only when configured**.
@@ -671,11 +686,13 @@ above.
   "interface_name": {
     "description": "Network interface name.",
     "unit": "string",
+    "short_name": "interface",
     "primary_key": true
   },
   "bytes_recv": {
     "description": "Bytes received per second.",
     "unit": "bytespers",
+    "short_name": "Rx/s",
     "rate": true,
     "watched": true,
     "watch_direction": "high",
@@ -685,6 +702,7 @@ above.
   "bytes_sent": {
     "description": "Bytes sent per second.",
     "unit": "bytespers",
+    "short_name": "Tx/s",
     "rate": true,
     "watched": true,
     "watch_direction": "high",
@@ -711,6 +729,11 @@ above.
   "bytes_speed_rate_per_sec": {
     "description": "Estimated per-direction bandwidth capacity in bytes/s. Computed from the interface link speed (Mbit/s) under a full-duplex split assumption: speed_mbits * 1e6 / 8 / 2. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
     "unit": "bytespers"
+  },
+  "hidden": {
+    "description": "Display-filter flag mirroring Glances v5's hide_zero filter. glances-rs filters interfaces/disks by name (removing them), so no value-based hiding applies and this is always false; emitted for payload-shape parity.",
+    "unit": "bool",
+    "internal": true
   }
 }
 ```
@@ -720,3 +743,26 @@ spec, `docs/superpowers/specs/2026-08-02-info-endpoint-design.md`):
 glances-rs does not collect `errors_in`/`errors_out`/`dropped_in`/
 `dropped_out`, so they are absent from both the data response and `/info` —
 `/info` mirrors what the server actually emits, never Glances' upstream list.
+
+`diskio/info` carries the same `hidden` entry (`unit: bool`, `internal:
+true`, always `false`), for the same reason — name-based filtering, not
+value-based.
+
+### 9.3 `GET /api/5/all/info` — every plugin's schema at once (v0.4.2)
+
+The `/all` analogue of §9: an object keyed by **plugin name**, each value the
+exact same field-schema object `/api/5/{plugin}/info` would return for that
+plugin. Only registered plugins are present (disabled plugins are absent, not
+`null`). Inert, like the single-plugin route: static metadata + config only,
+never wakes or waits on a collector, never `503`.
+
+```json
+{
+  "mem": { "total": { "description": "…", "unit": "bytes" }, … },
+  "network": { "interface_name": { … }, "hidden": { … }, … },
+  …
+}
+```
+
+**Status codes.** `200` always — there is no unknown-plugin case to `404` on
+(unlike `/{plugin}/info`, there is no plugin name in the URL to validate).
