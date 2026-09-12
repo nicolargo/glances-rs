@@ -3,8 +3,10 @@
 
 CARGO ?= cargo
 BINARY = target/release/glances-rs
+IMAGE ?= glances-rs
+VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
-.PHONY: build debug run test lint fmt check clean
+.PHONY: build debug run test lint fmt check clean docker-build docker-run
 
 ## Build the optimized release binary (footprint profile from Cargo.toml)
 build:
@@ -38,3 +40,18 @@ check: lint test build
 ## Remove build artifacts
 clean:
 	$(CARGO) clean
+
+## Build the container image (scratch base, ~2 MB)
+docker-build:
+	docker build -t $(IMAGE):$(VERSION) -t $(IMAGE):latest .
+	@docker images $(IMAGE):$(VERSION) --format 'Image: {{.Repository}}:{{.Tag}} ({{.Size}})'
+
+## Run the container against the host. Needs GLANCES_RS_PASSWORD in the
+## environment -- the image binds 0.0.0.0 and refuses to start without one.
+docker-run:
+	docker run --rm --name glances-rs \
+	  --network host --pid host \
+	  --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+	  -v /etc/os-release:/etc/os-release:ro \
+	  -e GLANCES_RS_PASSWORD \
+	  $(IMAGE):latest

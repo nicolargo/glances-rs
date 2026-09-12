@@ -1,13 +1,18 @@
 name: Release
 
-# Pushing a version tag creates a GitHub release, then builds a single
-# binary per target and attaches the archives to it.
+# Pushing a version tag creates a GitHub release, builds a single binary per
+# target and attaches the archives to it, then publishes the container image
+# to GHCR.
 on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+# Declared per job rather than here: the docker jobs need `packages: write`,
+# and there is no reason for the binary-upload jobs to inherit it.
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   # The upload action below does not create the release itself — it expects
@@ -16,6 +21,8 @@ jobs:
   # found" and fail).
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/create-gh-release-action@v1
@@ -40,6 +47,8 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       # Cross-compiles when needed, builds --release --locked, packages a
@@ -50,3 +59,122 @@ jobs:
           target: ${{ matrix.target }}
           archive: glances-rs-$tag-$target
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # Container image (ghcr.io/nicolargo/glances-rs)
+  # ---------------------------------------------------------------------------
+  # One native runner per architecture, then a manifest list stitched from the
+  # digests they push. The alternative — a single amd64 runner with
+  # `platforms: linux/amd64,linux/arm64` — builds arm64 under QEMU, which turns
+  # a 40 s compile into 15-25 min on a `lto = true` + `codegen-units = 1`
+  # profile, close enough to the job timeout to be a real risk.
+  #
+  # If `ubuntu-24.04-arm` ever stops resolving ("no runner matching labels"),
+  # the fallback is that QEMU variant: drop this matrix, keep one ubuntu-latest
+  # runner, add `docker/setup-qemu-action` and set both platforms on the build.
+  docker-build:
+    name: image (${{ matrix.platform }})
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm   # free on public repositories
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Each architecture pushes an untagged digest; the tags are applied once,
+      # to the manifest list, by the job below. Two runners tagging the same
+      # name would race, with the loser's architecture silently overwritten.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+          # No cache-from/cache-to: buildx does not export the Dockerfile's
+          # cargo `--mount=type=cache` mounts to the gha backend, and a release
+          # tag changes the source, so every other layer misses anyway. The
+          # cache round-trip would cost more than the 40 s build it skips.
+
+      # The digest is the only thing the manifest job needs, and artifact names
+      # must be unique, so each runner writes an empty file named after its own
+      # digest rather than a shared file the two would clobber.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          # `outputs.digest` is "sha256:<hex>"; the prefix is re-added when the
+          # manifest job rebuilds the references, so strip it here.
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-manifest:
+    name: image (manifest)
+    needs: docker-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No `{{major}}` tag: the project is pre-v1, so a bare `0` would promise
+      # a compatibility guarantee that 0.x explicitly does not make.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.version=${{ github.ref_name }}
+
+      - name: Create and push manifest list
+        working-directory: /tmp/digests
+        run: |
+          # Word splitting is the point on both lines: one expands to the -t
+          # flags, the other to the per-architecture digest references.
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect
+        run: docker buildx imagetools inspect "${{ env.IMAGE }}:${{ steps.meta.outputs.version }}"

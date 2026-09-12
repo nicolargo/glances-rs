@@ -1,0 +1,9 @@
+# Allow-list: the build context is exactly what `cargo build` and the image
+# need. Everything else is either huge (target/ runs to gigabytes, .git/ to
+# hundreds of megabytes) or has no business being sent to the daemon — a
+# stray .env or local config can never leak into a layer this way.
+*
+!Cargo.toml
+!Cargo.lock
+!src
+!docker/config.toml

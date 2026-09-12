@@ -185,6 +185,115 @@ loopback and reachable only through the proxy.
   your public hostname when exposing the server. This blocks spoofed-`Host`
   attacks.
 
+## Docker
+
+The image is built `FROM scratch`: it contains the statically linked binary
+and one config file, and nothing else — no shell, no package manager, no
+shared libc, no CA bundle. Total **1.94 MB**, measured RSS **1.3 MiB** at
+rest. There is no second process to spawn and no library to patch: a CVE in
+the image can only be a CVE in glances-rs itself.
+
+Published to GHCR on every version tag, as a `linux/amd64` + `linux/arm64`
+manifest list:
+
+```bash
+docker pull ghcr.io/nicolargo/glances-rs:latest
+```
+
+Or build it yourself:
+
+```bash
+make docker-build                             # or: docker build -t glances-rs .
+echo "GLANCES_RS_PASSWORD=$(openssl rand -base64 24)" > .env
+docker compose up -d
+curl -u glances:"$GLANCES_RS_PASSWORD" http://localhost:61208/api/5/mem
+```
+
+Each release carries a SLSA provenance attestation and an SBOM, both built by
+`.github/workflows/release.yml` and verifiable before you run anything:
+
+```bash
+gh attestation verify oci://ghcr.io/nicolargo/glances-rs:latest -R nicolargo/glances-rs
+docker buildx imagetools inspect ghcr.io/nicolargo/glances-rs:latest --format '{{ json .SBOM }}'
+```
+
+Tags are `X.Y.Z`, `X.Y` and `latest`. There is deliberately no bare-major tag:
+the project is pre-v1, and `0` would promise a compatibility guarantee that
+0.x does not make.
+
+The username in `-u` is ignored — the config model is password-only.
+
+### Running it against the host
+
+The plugins read `/proc`, `/sys/class/net` and `/etc/os-release` through
+hard-coded paths, so the container has to borrow the host's namespaces rather
+than measure its own:
+
+```bash
+docker run -d --name glances-rs \
+  --network host --pid host \
+  --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+  -v /etc/os-release:/etc/os-release:ro \
+  -e GLANCES_RS_PASSWORD \
+  glances-rs:latest
+```
+
+| Flag | Why |
+|---|---|
+| `--network host` | `/sys/class/net` then lists the host's interfaces, and the container inherits the host's hostname (reported by `system` and by alert events). The server binds the host's port directly, so no `-p`. |
+| `--pid host` | No effect on today's plugins — `/proc/stat`, `/proc/meminfo`, `/proc/vmstat` and `/proc/diskstats` are not namespaced — but correct for any future per-process plugin. |
+| `-v /etc/os-release:ro` | `system` reports `linux_distro` from it. A scratch image has no such file; without the mount the field is simply absent (the plugin degrades, it does not fail). |
+| `--read-only`, `--cap-drop ALL`, `no-new-privileges` | Free: glances-rs writes nothing to disk, every file it reads is world-readable, and port 61208 is unprivileged. The container runs as uid 65534. |
+
+`-e TZ` is not needed: every timestamp glances-rs emits is UTC by
+construction, and nothing in the code reads `TZ` or `/etc/localtime`.
+
+### What the image changes, and what it does not
+
+`docker/config.toml` is baked in at `/etc/glances-rs/config.toml`, the last
+entry in the config discovery order. Mount your own file over that path — or
+point `GLANCES_RS_CONFIG` elsewhere — to replace it entirely. It sets three
+things:
+
+- **`bind = "0.0.0.0"`.** A container that binds loopback is unreachable.
+- **`password_env = "GLANCES_RS_PASSWORD"`.** §7.1 makes a password mandatory
+  on a non-loopback bind, and an unset or empty variable is a hard startup
+  error. The container **exits** rather than serving unauthenticated — the
+  one behaviour to keep in mind when deploying it.
+- **`trusted_hosts = []`.** This is the one place the image is *less* strict
+  than a bare run. The default is `["localhost", "127.0.0.1"]`, the §7.4
+  guard against DNS rebinding; an image cannot know the hostname or LAN
+  address of the machine it will run on, so that default would answer
+  `400 host not allowed` to every request not made from the host itself.
+  Basic auth still gates every `/api/5` route, so this is not an open server
+  — but it is one layer fewer. Put it back by mounting a config that lists
+  the names you actually use.
+
+### Known limitation: `fs` in a container
+
+The `fs` plugin reads the *container's* mount table. The container's `/` is
+the overlay, whose size and usage are those of the host filesystem backing
+`/var/lib/docker` — on a standard install, the host root — so **the root
+filesystem is reported correctly**. Other host filesystems (a separate
+`/home` or `/data`, a ZFS pool) are not in the container's mount namespace
+and are therefore missing.
+
+Adding `-v /:/rootfs:ro` brings them in, at a real cost: the entire host
+filesystem becomes readable from inside the container, which is most of what
+the scratch base image was bought to avoid. `docker/config.toml` carries the
+`hide`/`alias` recipe to make that output readable if you accept the trade.
+
+### Deliberately not in the image
+
+- **No `HEALTHCHECK`.** A scratch image has no shell and no `curl` to run one
+  with, and adding either would undo the base image. Probe `/status` from
+  outside: it is inert by design (§6.4) — always `200`, no auth, and it never
+  wakes a collector.
+- **No `/var/run/docker.sock` mount.** There is no `containers` plugin yet, so
+  it would buy nothing today — and access to that socket is equivalent to root
+  on the host, which would undo every hardening flag above. The same goes for
+  the rootless Podman socket.
+
 ## Footprint
 
 The whole reason glances-rs exists is to serve the same API with a far

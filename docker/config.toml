@@ -1,0 +1,65 @@
+# glances-rs — configuration baked into the container image.
+#
+# Config discovery (src/config.rs) checks ./glances-rs.toml, then
+# $XDG_CONFIG_HOME/glances-rs/config.toml, then this path — so mounting your
+# own file over /etc/glances-rs/config.toml, or pointing GLANCES_RS_CONFIG
+# somewhere else, replaces everything below.
+
+[server]
+# A container is only reachable if it binds every interface. ARCHITECTURE.md
+# §7.1 then makes a password mandatory: this image cannot start without one.
+bind = "0.0.0.0"
+port = 61208
+
+# Read the password from the environment, never from this file. An unset or
+# empty GLANCES_RS_PASSWORD is a hard startup error, so a missing secret stops
+# the container instead of quietly serving unauthenticated.
+password_env = "GLANCES_RS_PASSWORD"
+
+[security]
+# SECURITY TRADE-OFF — specific to this image, and the one place where it is
+# less strict than a bare `glances-rs` run.
+#
+# The built-in default is ["localhost", "127.0.0.1"]: the §7.4 guard that makes
+# DNS rebinding fail. An image cannot know the hostname or LAN address of the
+# machine it will be run on, so that default would answer 400 "host not
+# allowed" to every request not made from the host itself. An empty list turns
+# the Host check off (src/api/security.rs).
+#
+# Basic auth still gates every /api/5 route, so this is not an open server —
+# but it is one layer fewer. Put the layer back by mounting a config that lists
+# the names you actually use:
+#
+#   trusted_hosts = ["monitor.example.com", "192.168.1.10"]
+trusted_hosts = []
+
+# CORS stays fully closed (never a wildcard). Uncomment for a browser dashboard
+# served from another origin:
+# cors_origins = ["https://dashboard.example.com"]
+
+[plugins.fs]
+# The `fs` plugin reads the *container's* mount table, which differs from the
+# host's in two ways.
+#
+# 1. Noise. Docker injects /etc/hosts, /etc/hostname and /etc/resolv.conf as
+#    individual bind mounts, and every file you mount yourself lands there too.
+#    Each shows up as a "filesystem" that just repeats the numbers of whatever
+#    holds it. The `hide` list below drops them. Setting `hide` replaces the
+#    built-in default, so /boot and snap mounts are repeated here to stay
+#    filtered.
+#
+# 2. Coverage. The container's "/" is the overlay, whose size/free/percent are
+#    those of the host filesystem backing /var/lib/docker — on a standard
+#    install, the host root. So the root filesystem is reported correctly out
+#    of the box. Other host filesystems (a separate /home or /data, a ZFS
+#    pool) are NOT visible: they are not in the container's mount namespace.
+#
+#    Mounting `-v /:/rootfs:ro` brings them in, at a real cost — the whole host
+#    filesystem becomes readable from inside the container, which is most of
+#    what the scratch base image was bought to avoid. If you accept it, the
+#    recursive mount also drags in ~15 pseudo-filesystems; filter with:
+#
+#      hide = ["/boot.*", ".*/snap.*", "^/etc/", "^/$", "^/rootfs/(proc|sys|run|var/lib/docker)"]
+#      [plugins.fs.alias]
+#      "/rootfs" = "/"
+hide = ["/boot.*", ".*/snap.*", "^/etc/"]

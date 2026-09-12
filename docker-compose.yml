@@ -1,0 +1,60 @@
+# glances-rs monitoring the host it runs on.
+#
+#   echo "GLANCES_RS_PASSWORD=$(openssl rand -base64 24)" > .env
+#   docker compose up -d --build
+#   curl -u glances:"$GLANCES_RS_PASSWORD" http://localhost:61208/api/5/mem
+#
+# The username is ignored (§7.2: the config model is password-only), so any
+# value works in the -u flag.
+
+services:
+  glances-rs:
+    build: .
+    image: glances-rs:latest
+    container_name: glances-rs
+    restart: unless-stopped
+
+    # The point of the container is to measure the *host*. The plugins read
+    # /proc, /sys/class/net and /etc/os-release through hard-coded paths, so
+    # the container has to share the host's namespaces instead of its own.
+    #
+    # network_mode: host  — /sys/class/net then lists the host's interfaces,
+    #                       and the container inherits the host's hostname
+    #                       (which `system` and the alert journal report).
+    #                       It also means the server binds the host's port
+    #                       directly, so `ports:` must not be set.
+    # pid: host           — no effect on today's plugins (/proc/stat,
+    #                       /proc/meminfo, /proc/vmstat and /proc/diskstats
+    #                       are not namespaced), but correct for any future
+    #                       per-process plugin.
+    network_mode: host
+    pid: host
+
+    environment:
+      # Mandatory. The image binds 0.0.0.0, and §7.1 refuses that without a
+      # password — unset this and the container exits at startup rather than
+      # serving unauthenticated.
+      GLANCES_RS_PASSWORD: ${GLANCES_RS_PASSWORD:?set GLANCES_RS_PASSWORD, e.g. in a .env file}
+      # RUST_LOG: info
+
+    volumes:
+      # `system` reports linux_distro from /etc/os-release. A scratch image has
+      # no such file, so without this mount the field is simply absent from the
+      # payload — the plugin degrades, it does not fail.
+      - /etc/os-release:/etc/os-release:ro
+
+    # Hardening. None of this costs a metric: glances-rs writes nothing to
+    # disk, and every file it reads is world-readable.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+    # No HEALTHCHECK: a scratch image has no shell and no curl to run one with,
+    # and adding either would undo the point of the base image. Probe
+    # /status from outside instead — it is inert by design (§6.4): always 200,
+    # no auth, and it never wakes a collector.
+    #
+    # Not mounted on purpose: /var/run/docker.sock. There is no `containers`
+    # plugin yet, so it would buy nothing — and access to that socket is
+    # equivalent to root on the host, which would undo everything above.
