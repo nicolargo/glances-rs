@@ -74,6 +74,22 @@ async fn network_info_collection_shape() {
 }
 
 #[tokio::test]
+async fn network_info_has_hidden_and_short_names() {
+    let (_, body) = info(Config::default(), "network").await;
+    assert_eq!(body["hidden"]["unit"], "bool");
+    assert_eq!(body["hidden"]["internal"], true);
+    assert_eq!(body["interface_name"]["short_name"], "interface");
+    assert_eq!(body["bytes_recv"]["short_name"], "Rx/s");
+}
+
+#[tokio::test]
+async fn diskio_info_has_hidden() {
+    let (_, body) = info(Config::default(), "diskio").await;
+    assert_eq!(body["hidden"]["unit"], "bool");
+    assert_eq!(body["hidden"]["internal"], true);
+}
+
+#[tokio::test]
 async fn cpu_info_internal_and_no_unimplemented_keys() {
     let (_, body) = info(Config::default(), "cpu").await;
     assert_eq!(body["cpucore"]["internal"], true);

@@ -145,9 +145,9 @@ const CPU_FIELDS: &[FieldInfo] = &[
 ];
 
 const LOAD_FIELDS: &[FieldInfo] = &[
-    FieldInfo::new("min1", "Average number of processes waiting in the run-queue plus those currently executing, over 1 minute.", Unit::Float),
-    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).watched_high(false).normalize("cpucore"),
-    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).watched_high(true).normalize("cpucore"),
+    FieldInfo::new("min1", "Average number of processes waiting in the run-queue plus those currently executing, over 1 minute.", Unit::Float).short("1 min"),
+    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).watched_high(false).normalize("cpucore").short("5 min"),
+    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).watched_high(true).normalize("cpucore").short("15 min"),
     FieldInfo::new("cpucore", "Total number of logical CPU cores.", Unit::Number).internal(),
 ];
 
@@ -247,10 +247,13 @@ const DISKIO_FIELDS: &[FieldInfo] = &[
         "Operator-defined display alias for the disk; present only when configured.",
         Unit::StringT,
     ),
+    FieldInfo::new("hidden", "Display-filter flag mirroring Glances v5's hide_zero filter. glances-rs filters interfaces/disks by name (removing them), so no value-based hiding applies and this is always false; emitted for payload-shape parity.", Unit::Bool).internal(),
 ];
 
 const NETWORK_FIELDS: &[FieldInfo] = &[
-    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT).pk(),
+    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT)
+        .pk()
+        .short("interface"),
     FieldInfo::new(
         "bytes_recv",
         "Bytes received per second.",
@@ -258,11 +261,13 @@ const NETWORK_FIELDS: &[FieldInfo] = &[
     )
     .rate()
     .watched_high(false)
-    .normalize("bytes_speed_rate_per_sec"),
+    .normalize("bytes_speed_rate_per_sec")
+    .short("Rx/s"),
     FieldInfo::new("bytes_sent", "Bytes sent per second.", Unit::BytesPerSec)
         .rate()
         .watched_high(false)
-        .normalize("bytes_speed_rate_per_sec"),
+        .normalize("bytes_speed_rate_per_sec")
+        .short("Tx/s"),
     FieldInfo::new(
         "bytes_all",
         "Total bytes received and sent per second (bytes_recv + bytes_sent).",
@@ -285,6 +290,7 @@ const NETWORK_FIELDS: &[FieldInfo] = &[
         "Estimated per-direction bandwidth capacity in bytes/s. Computed from the interface link speed (Mbit/s) under a full-duplex split assumption: speed_mbits * 1e6 / 8 / 2. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
         Unit::BytesPerSec,
     ),
+    FieldInfo::new("hidden", "Display-filter flag mirroring Glances v5's hide_zero filter. glances-rs filters interfaces/disks by name (removing them), so no value-based hiding applies and this is always false; emitted for payload-shape parity.", Unit::Bool).internal(),
 ];
 
 /// Every field a plugin emits, in stable schema order.
