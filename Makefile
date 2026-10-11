@@ -6,7 +6,7 @@ BINARY = target/release/glances-rs
 IMAGE ?= glances-rs
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
-.PHONY: build debug run test lint fmt check clean docker-build docker-run
+.PHONY: build debug run test compare-glances lint fmt check clean docker-build docker-run
 
 ## Build the optimized release binary (footprint profile from Cargo.toml)
 build:
@@ -24,6 +24,10 @@ run:
 ## Run the test suite
 test:
 	$(CARGO) test --locked
+
+## System test: diff the REST API against a reference Glances v5 (needs network, python3)
+compare-glances:
+	./scripts/compare-glances.sh
 
 ## Check formatting and lints (same gates as CI)
 lint:
