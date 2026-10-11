@@ -11,7 +11,7 @@ use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use serde_json::{Map, Value, json};
@@ -23,6 +23,7 @@ use tokio::task::JoinSet;
 /// they are never covered by these layers (§6.4).
 pub fn api_router(app: Arc<AppState>) -> Router {
     let routes = Router::new()
+        .route("/api/5/token", post(security::issue_token))
         .route("/api/5/pluginslist", get(plugins_list))
         .route("/api/5/all", get(all_stats))
         .route("/api/5/alert", get(alert_history))

@@ -164,7 +164,9 @@ services:
 ### 4. Connecting with a password
 
 Clients send HTTP Basic credentials. The username is ignored; only the
-password is checked (in constant time):
+password is checked (in constant time). A Glances v5 client
+(`glances -c http://server:61208 --password`) works too: it obtains a Bearer
+token from `POST /api/5/token` (`docs/api.md` §1.2):
 
 ```sh
 curl -u any:choose-a-strong-secret http://server:61208/api/5/all

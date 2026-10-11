@@ -433,8 +433,14 @@ the security layer.
 
 ### 7.2 Authentication — Basic only in v1
 
-**Decision: HTTP Basic only.** JWT/Bearer is deferred (removes the
-`jsonwebtoken` dependency and the entire `alg: none` validation pitfall).
+**Decision: HTTP Basic is the scheme; a minimal Bearer token exists only for
+Glances v5 clients.** JWT is still excluded (no `jsonwebtoken` dependency, no
+`alg: none` validation pitfall). The `glances -c` client insists on
+`POST /api/5/token` and then sends `Authorization: Bearer`, so `/token` mints
+an opaque stateless token `<exp>.<HMAC-SHA256(password, exp)>` (one hour,
+constant-time check, no server-side storage, password change revokes all).
+It costs two small crates (`hmac`, `sha2`) and zero RAM at rest. Basic keeps
+working unchanged on every route.
 
 - Auth is a `tower-http` middleware on the `/api/5/` sub-router — one control
   point, not per-handler.
@@ -639,6 +645,6 @@ that closed each):
 | 8 | v1 = mem, cpu, load, network      | First deployable tool; Glances Phase 1.|
 | 9 | Disappearing items removed at once| Minimal; but `previous` must store `now` only. |
 |10 | Closed by default (refuse to start)| Turns intent into a guarantee.        |
-|11 | Basic auth only in v1             | Drops JWT dependency and pitfalls.     |
+|11 | Basic auth; stateless HMAC Bearer only for Glances v5 clients | No JWT dependency or `alg: none` pitfall; `/token` costs 2 small crates. |
 |12 | TLS via reverse proxy             | Keeps the binary minimal.              |
 |13 | Single binary crate, modules      | Boundaries still settling.             |

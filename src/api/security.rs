@@ -11,7 +11,11 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use constant_time_eq::constant_time_eq;
+use hmac::{Hmac, Mac};
+use serde_json::json;
+use sha2::Sha256;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tower_http::cors::CorsLayer;
 
 /// Wrap the `/api/5` routes with the §7 security layers. Execution order on
@@ -36,14 +40,98 @@ async fn require_auth(State(app): State<Arc<AppState>>, request: Request, next: 
         // here with no password means the server is loopback-only. Do not
         // "fix" this into a deny without revisiting that invariant.
         None => next.run(request).await,
-        Some(expected) => match basic_password(&request) {
-            Some(provided) if constant_time_eq(provided.as_bytes(), expected.as_bytes()) => {
-                next.run(request).await
-            }
+        Some(expected) => {
+            // Basic (any client) or a Bearer token minted by `POST /token`
+            // (Glances v5 clients). Both are checked in constant time.
+            let ok = match basic_password(&request) {
+                Some(provided) => constant_time_eq(provided.as_bytes(), expected.as_bytes()),
+                None => bearer_token(&request).is_some_and(|t| token_valid(expected, t, now())),
+            };
             // constant_time_eq, never `==`: a naive compare leaks the secret
             // byte-by-byte through a timing side channel (§7.2).
-            _ => unauthorized(),
-        },
+            if ok {
+                next.run(request).await
+            } else {
+                unauthorized()
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bearer tokens (`POST /api/5/token`, Glances v5 client compatibility)
+// ---------------------------------------------------------------------------
+
+/// Token lifetime. The Glances client transparently asks for a new token
+/// once on a `401`, so a modest lifetime costs nothing.
+const TOKEN_TTL_SECS: u64 = 3600;
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// `HMAC-SHA256(key = password, "glances-rs-token|<exp>")`, hex-encoded.
+/// Stateless: nothing is stored server-side, a restart keeps tokens valid,
+/// and changing the password revokes every outstanding token.
+fn token_tag(password: &str, exp: u64) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(password.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(format!("glances-rs-token|{exp}").as_bytes());
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A token is `<expiry unix secs>.<tag>`; the client treats it as opaque.
+fn make_token(password: &str, now: u64) -> String {
+    let exp = now + TOKEN_TTL_SECS;
+    format!("{exp}.{}", token_tag(password, exp))
+}
+
+fn token_valid(password: &str, token: &str, now: u64) -> bool {
+    let Some((exp, tag)) = token.split_once('.') else {
+        return false;
+    };
+    let Ok(exp) = exp.parse::<u64>() else {
+        return false;
+    };
+    constant_time_eq(tag.as_bytes(), token_tag(password, exp).as_bytes()) && exp > now
+}
+
+fn bearer_token(request: &Request) -> Option<&str> {
+    request
+        .headers()
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+}
+
+/// `POST /api/5/token` — trade the Basic credentials for a Bearer token.
+/// `404` when no password is configured (nothing to authenticate: the
+/// Glances client then goes on without a token). A Bearer token alone is
+/// refused, so a token cannot be refreshed forever without the password.
+pub async fn issue_token(State(app): State<Arc<AppState>>, request: Request) -> Response {
+    let Some(expected) = app.config.server.password.as_deref() else {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({ "detail": "authentication not configured" })),
+        )
+            .into_response();
+    };
+    match basic_password(&request) {
+        Some(p) if constant_time_eq(p.as_bytes(), expected.as_bytes()) => axum::Json(json!({
+            "access_token": make_token(expected, now()),
+            "token_type": "bearer",
+            "expires_in": TOKEN_TTL_SECS,
+        }))
+        .into_response(),
+        _ => unauthorized(),
     }
 }
 
@@ -173,6 +261,23 @@ mod tests {
             basic_password(&request_with_auth(&format!("Basic {no_colon}"))),
             None
         );
+    }
+
+    #[test]
+    fn token_roundtrip_expiry_and_tamper() {
+        let t = make_token("pw", 1_000);
+        assert!(token_valid("pw", &t, 1_000));
+        assert!(token_valid("pw", &t, 1_000 + TOKEN_TTL_SECS - 1));
+        // Expired.
+        assert!(!token_valid("pw", &t, 1_000 + TOKEN_TTL_SECS));
+        // Wrong password (e.g. rotated) revokes it.
+        assert!(!token_valid("other", &t, 1_000));
+        // Extending the expiry without the key fails.
+        let (_, tag) = t.split_once('.').unwrap();
+        assert!(!token_valid("pw", &format!("99999999999.{tag}"), 1_000));
+        // Garbage.
+        assert!(!token_valid("pw", "nodot", 0));
+        assert!(!token_valid("pw", "x.y", 0));
     }
 
     #[test]

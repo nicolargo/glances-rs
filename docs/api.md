@@ -17,13 +17,14 @@
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
 | `/api/5/{plugin}/{field}` | GET   | One field of the payload: `{field: value}` (object plugin) or `{field: [value, …]}` (collection plugin, one per item); `time_since_update`/`_levels` are addressable too | `200`, `404` unknown plugin or field, `503` as `/{plugin}` |
 | `/api/5/{plugin}/top/{n}` | GET   | Collection plugins only: the first `n` items as a bare array | `200`, `404` unknown plugin or not a collection, `422` `n` < 1 or not an integer |
+| `/api/5/token`           | POST   | Trade the Basic credentials for a Bearer token: `{"access_token","token_type":"bearer","expires_in":3600}` (§1.2) | `200`, `401` bad/missing Basic credentials, `404` when no password is configured |
 | `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/api/5/alert`           | GET    | Array of alert events, most-recent last (§8.3) | `200` always, `[]` when empty; never `503` — read-only, does not wake or wait on a collector |
 | `/status`                | GET    | Static JSON `{"status":"ok","version":"5","glances_version":"<glances-rs version>","implementation":"glances-rs"}` (§1.1) | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Same JSON as `/status`                  | `200`; never wakes plugins, never requires auth |
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
-`/api/5/token` (Basic auth only), `/api/5/config`, `/api/5/args`, `/api/5/{plugin}/limits`,
+`/api/5/config`, `/api/5/args`, `/api/5/{plugin}/limits`,
 `/api/5/all/limits`, `/api/5/{plugin}/history` and the item routes
 `/api/5/{plugin}/{field}/{key}` / `…/value/{value}`. `/api/5/limits` is also
 deliberately not served: glances-rs ships no built-in default thresholds
@@ -60,11 +61,11 @@ The TUI renders the 9 plugins glances-rs serves (`cpu`, `diskio`, `fs`,
 glances-rs does not implement (processes, sensors, containers, quicklook…) are
 simply absent. Restrictions:
 
-- **No password-protected servers.** The client authenticates with
-  `POST /api/5/token` (Bearer); glances-rs is Basic-only (§2) and answers
-  `404`, so against a server with `[server].password` set the client gets
-  `401`. Use glances-rs without a password on a loopback bind, or reach it
-  through a reverse proxy that handles authentication.
+- **Password-protected servers work** (`glances -c http://host:61208
+  --password`, the username is ignored): the client trades the password for a
+  Bearer token via `POST /api/5/token` (§1.2). Plain HTTP only — put a TLS
+  reverse proxy in front when the network is not trusted
+  (ARCHITECTURE.md §7).
 - **Alerts panel stays empty.** The client also reads `/api/5/alert/incidents`,
   which glances-rs does not serve (`404`); the client then clears its alert
   list, even though `/api/5/alert` is served.
@@ -72,12 +73,31 @@ simply absent. Restrictions:
   available (no process plugin).
 - `[security].trusted_hosts` must include the host name the client uses.
 
+### 1.2 Bearer tokens (`POST /api/5/token`)
+
+Added for Glances v5 clients. Basic auth stays the primary scheme: every
+`/api/5` route still accepts `Authorization: Basic …`, and additionally
+`Authorization: Bearer <token>`.
+
+- `POST /api/5/token` with valid Basic credentials returns
+  `{"access_token": "<exp>.<tag>", "token_type": "bearer", "expires_in": 3600}`.
+  The token is opaque to clients; it is **not** a JWT.
+- `tag = HMAC-SHA256(key = password, "glances-rs-token|<exp>")`, `exp` a unix
+  timestamp one hour ahead. Stateless — nothing is stored server-side, so it
+  adds no RAM at rest, survives a restart, and **changing the password revokes
+  every outstanding token**. Tags are compared in constant time.
+- A Bearer token alone cannot mint a new token (`401`): refreshing needs the
+  password. The Glances client does this itself, once, on a `401`.
+- No password configured ⇒ `404` (Glances behaviour; the client then goes on
+  without a token).
+- `401` carries the usual `WWW-Authenticate: Basic realm="glances-rs"`.
+
 ## 2. Divergences from Glances v5 (documented contract differences)
 
 | Behaviour | Glances v5 | glances-rs |
 |---|---|---|
 | Known plugin, no data yet | `200` with `null` body | **Waits** for the first collection cycle; `503` if it does not arrive within the guard timeout. A `200` always carries real data. |
-| Auth | Basic + Bearer token (`/token`) | Basic only (v1). |
+| Auth | Basic + JWT Bearer (`/token`) | Basic + stateless HMAC Bearer (`/token`, §1.2) — an opaque token, not a JWT. |
 | `/status`, `/healthz` | JSON with `status`, `version`, `glances_version` | Same keys, plus `implementation: "glances-rs"`; `glances_version` is the glances-rs version. |
 | `_levels` (alert thresholds) | Per-field threshold metadata | Populated per §8 Alerting. `{}` when no threshold is configured for that plugin (the default, config-only — no built-in thresholds). |
 | Platform-specific fields | Present per platform/psutil | **Full field parity on Linux** (the primary target); macOS/Windows degrade to the portable subset `sysinfo` exposes. Clients treat absent fields as "not available", exactly as with Glances' platform-specific fields. |

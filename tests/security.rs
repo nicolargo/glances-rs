@@ -148,3 +148,89 @@ async fn cors_allows_a_listed_origin() {
         "https://dash.example.com"
     );
 }
+
+// --- Bearer token (`POST /api/5/token`, Glances v5 client) ------------------
+
+fn post_token(auth: Option<String>) -> Request<Body> {
+    let mut b = Request::post("/api/5/token");
+    if let Some(a) = auth {
+        b = b.header(header::AUTHORIZATION, a);
+    }
+    b.body(Body::empty()).unwrap()
+}
+
+fn basic(user: &str, pass: &str) -> String {
+    format!("Basic {}", BASE64_STANDARD.encode(format!("{user}:{pass}")))
+}
+
+async fn mint(router: &Router) -> String {
+    let resp = router
+        .clone()
+        .oneshot(post_token(Some(basic("glances", "s3cret"))))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["token_type"], "bearer");
+    assert!(body["expires_in"].as_u64().unwrap() > 0);
+    body["access_token"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn token_without_password_configured_is_404() {
+    // The Glances client treats 404 as "no auth": it proceeds without token.
+    let (status, _) = send(&router_with(""), post_token(None)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn token_requires_the_basic_password() {
+    let router = router_with("[server]\npassword = \"s3cret\"");
+    assert_eq!(
+        send(&router, post_token(None)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(&router, post_token(Some(basic("glances", "wrong"))))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn bearer_token_authenticates_api_requests() {
+    let router = router_with("[server]\npassword = \"s3cret\"");
+    let token = mint(&router).await;
+    let req = Request::get("/api/5/pluginslist")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&router, req).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn forged_or_foreign_bearer_tokens_are_401() {
+    let router = router_with("[server]\npassword = \"s3cret\"");
+    let token = mint(&router).await;
+    // Same token against a server with another password.
+    let other = router_with("[server]\npassword = \"different\"");
+    for (r, t) in [(&router, "9999999999.deadbeef"), (&other, token.as_str())] {
+        let req = Request::get("/api/5/pluginslist")
+            .header(header::AUTHORIZATION, format!("Bearer {t}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(send(r, req).await.0, StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[tokio::test]
+async fn a_bearer_token_cannot_mint_another_token() {
+    let router = router_with("[server]\npassword = \"s3cret\"");
+    let token = mint(&router).await;
+    let (status, _) = send(&router, post_token(Some(format!("Bearer {token}")))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
