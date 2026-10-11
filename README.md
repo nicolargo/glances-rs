@@ -314,17 +314,17 @@ stand in for heavier polling):
 
 | Polling load | glances-rs RSS | glances-rs CPU | Glances RSS | Glances CPU |
 |---|---|---|---|---|
-| at rest (no client) | **≈ 3.8 MiB** | ≈ 0 % | ≈ 107 MiB | collects continuously |
-| 2 req/s  | 3.8 MiB | 0.20 % | 107.5 MiB | 1.80 % |
-| 10 req/s | 4.0 MiB | 0.50 % | 109 MiB | 6.50 % |
-| 100 req/s | 5.5 MiB | 1.60 % | 115.7 MiB | 11.0 % |
+| at rest (no client) | **≈ 3.5 MiB** | ≈ 0 % | ≈ 62 MiB | collects continuously |
+| 2 req/s  | 3.7 MiB | 0.10 % | 62.5 MiB | 0.80 % |
+| 10 req/s | 3.9 MiB | 0.20 % | 62.5 MiB | 1.60 % |
+| 100 req/s | 5.1 MiB | 1.30 % | 63.0 MiB | 9.90 % |
 
-Glances was run with the exact same scope —
+Glances (v5 `develop`, 5.0.0b1) was run with the exact same scope —
 `glances --disable-plugins all --enable-plugins
 cpu,load,mem,network,system,uptime,memswap,fs,diskio --disable-history
---disable-webui -w`. Even like-for-like, glances-rs uses **~28× less memory**
-at rest (~21× under the heaviest polling) and a fraction of the CPU. The binary
-is a single 2.1 MiB file vs a Python install (interpreter + FastAPI/uvicorn/
+--disable-webui -w`. Even like-for-like, glances-rs uses **~18× less memory**
+at rest (~12× under the heaviest polling) and a fraction of the CPU. The binary
+is a single 1.8 MiB file vs a Python install (interpreter + FastAPI/uvicorn/
 psutil + ~30 deps).
 
 Two design choices drive this: a compiled, GC-free runtime, and **lazy
@@ -332,13 +332,13 @@ collection** — glances-rs collects nothing while no client is connected and
 stays near its idle RSS until polled hard, whereas Glances' scheduler runs
 continuously (the footprint weakness its own v5 architecture document
 acknowledges). Most of the gap is the Python+framework baseline: even at rest,
-scoped to the very same nine plugins, Glances sits ~28× above glances-rs before
+scoped to the very same nine plugins, Glances sits ~18× above glances-rs before
 a single request is served.
 
 > **Honest caveats.** Numbers come from one machine, not your server —
 > treat them as indicative and run the script on your target. The
-> comparison uses Glances **4.5.5 stable** (REST API v4), not the
-> `develop-v5` branch.
+> comparison uses the Glances v5 `develop` beta (5.0.0b1). Details and a
+> before/after A/B of the latest changes: [`docs/footprint-audit-v0.4.2.md`](docs/footprint-audit-v0.4.2.md).
 
 ```sh
 # Reproduce (Linux): start each server, then, on the same machine:
