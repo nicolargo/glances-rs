@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::state::AppState;
 use axum::Router;
-use axum::http::{StatusCode, header};
+use axum::http::header;
 use axum::routing::get;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
