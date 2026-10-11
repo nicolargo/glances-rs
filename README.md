@@ -45,7 +45,10 @@ collection cycle, so you always get real data (never `null`). When no one
 queries a plugin for a while, its collector stops on its own — that is the
 lazy design that keeps the footprint near zero at rest. `GET /status` and
 `GET /healthz` are liveness probes: always `200`, no auth, and they never
-wake a collector.
+wake a collector. Their body is a small static JSON
+(`{"status":"ok","version":"5",…}`), which is what lets a stock Glances v5
+client connect: `glances -c http://127.0.0.1:61208` (restrictions in
+`docs/api.md` §1.1).
 
 Logging is controlled with `RUST_LOG` (e.g. `RUST_LOG=debug glances-rs`).
 

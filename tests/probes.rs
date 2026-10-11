@@ -58,3 +58,27 @@ async fn probes_never_wake_a_collector() {
     }
     assert_eq!(app.active_collectors().await, 0);
 }
+
+#[tokio::test]
+async fn probes_answer_the_json_a_glances_v5_client_requires() {
+    // `glances -c` reads /status as JSON and checks `version == "5"`.
+    for path in ["/status", "/healthz"] {
+        let response = build_router(AppState::new(Config::default()))
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/json",
+            "{path}"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["version"], "5");
+        assert_eq!(body["glances_version"], env!("CARGO_PKG_VERSION"));
+    }
+}

@@ -19,8 +19,8 @@
 | `/api/5/{plugin}/top/{n}` | GET   | Collection plugins only: the first `n` items as a bare array | `200`, `404` unknown plugin or not a collection, `422` `n` < 1 or not an integer |
 | `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/api/5/alert`           | GET    | Array of alert events, most-recent last (§8.3) | `200` always, `[]` when empty; never `503` — read-only, does not wake or wait on a collector |
-| `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
-| `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
+| `/status`                | GET    | Static JSON `{"status":"ok","version":"5","glances_version":"<glances-rs version>","implementation":"glances-rs"}` (§1.1) | `200`; never wakes plugins, never requires auth |
+| `/healthz`               | GET    | Same JSON as `/status`                  | `200`; never wakes plugins, never requires auth |
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
 `/api/5/token` (Basic auth only), `/api/5/config`, `/api/5/args`, `/api/5/{plugin}/limits`,
@@ -44,12 +44,41 @@ a CORS layer, a trusted-`Host` check and HTTP Basic auth. Added status codes:
 The probes (`/status`, `/healthz`) are outside this stack — no auth, no host
 check, no wake-up.
 
+### 1.1 Using a Glances v5 client (`glances -c`)
+
+A stock Glances v5 client can connect to glances-rs:
+
+```sh
+glances -c http://127.0.0.1:61208
+```
+
+The client checks `GET /status` (JSON with `version == "5"` — this is why the
+probes return a small static JSON body rather than an empty one), loads the
+schema from `/api/5/all/info`, then polls `/api/5/all` and `/api/5/alert`.
+The TUI renders the 9 plugins glances-rs serves (`cpu`, `diskio`, `fs`,
+`load`, `mem`, `memswap`, `network`, `system`, `uptime`); blocks for plugins
+glances-rs does not implement (processes, sensors, containers, quicklook…) are
+simply absent. Restrictions:
+
+- **No password-protected servers.** The client authenticates with
+  `POST /api/5/token` (Bearer); glances-rs is Basic-only (§2) and answers
+  `404`, so against a server with `[server].password` set the client gets
+  `401`. Use glances-rs without a password on a loopback bind, or reach it
+  through a reverse proxy that handles authentication.
+- **Alerts panel stays empty.** The client also reads `/api/5/alert/incidents`,
+  which glances-rs does not serve (`404`); the client then clears its alert
+  list, even though `/api/5/alert` is served.
+- Pinning a process and process sorting (`POST /api/5/processes/...`) are not
+  available (no process plugin).
+- `[security].trusted_hosts` must include the host name the client uses.
+
 ## 2. Divergences from Glances v5 (documented contract differences)
 
 | Behaviour | Glances v5 | glances-rs |
 |---|---|---|
 | Known plugin, no data yet | `200` with `null` body | **Waits** for the first collection cycle; `503` if it does not arrive within the guard timeout. A `200` always carries real data. |
 | Auth | Basic + Bearer token (`/token`) | Basic only (v1). |
+| `/status`, `/healthz` | JSON with `status`, `version`, `glances_version` | Same keys, plus `implementation: "glances-rs"`; `glances_version` is the glances-rs version. |
 | `_levels` (alert thresholds) | Per-field threshold metadata | Populated per §8 Alerting. `{}` when no threshold is configured for that plugin (the default, config-only — no built-in thresholds). |
 | Platform-specific fields | Present per platform/psutil | **Full field parity on Linux** (the primary target); macOS/Windows degrade to the portable subset `sysinfo` exposes. Clients treat absent fields as "not available", exactly as with Glances' platform-specific fields. |
 

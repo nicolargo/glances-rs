@@ -3,7 +3,7 @@
 use crate::config::Config;
 use crate::state::AppState;
 use axum::Router;
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::routing::get;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
@@ -50,8 +50,22 @@ pub fn check_security(bind: IpAddr, password: Option<&str>) -> Result<(), Startu
 /// and they never touch plugin state, so they can never wake a collector.
 fn probes_router() -> Router {
     Router::new()
-        .route("/status", get(|| async { StatusCode::OK }))
-        .route("/healthz", get(|| async { StatusCode::OK }))
+        .route("/status", get(probe))
+        .route("/healthz", get(probe))
+}
+
+/// Static JSON body, same keys as Glances v5's probes: a Glances v5 client
+/// (`glances -c`) reads `/status` and requires `version == "5"` (the API
+/// version) before it trusts the server. `glances_version` carries this
+/// server's own version. A compile-time constant: no allocation, no state.
+const PROBE_BODY: &str = concat!(
+    r#"{"status":"ok","version":"5","glances_version":""#,
+    env!("CARGO_PKG_VERSION"),
+    r#"","implementation":"glances-rs"}"#
+);
+
+async fn probe() -> ([(header::HeaderName, &'static str); 1], &'static str) {
+    ([(header::CONTENT_TYPE, "application/json")], PROBE_BODY)
 }
 
 /// Full application router: inert probes + the `/api/5` sub-router.

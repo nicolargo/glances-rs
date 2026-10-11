@@ -399,6 +399,11 @@ require auth. A probe that woke collection would keep the server permanently
 awake and defeat the lazy model. Probes live in a separate sub-router, outside
 the middleware stack, so no auth layer can ever cover them by accident.
 
+Their body is a compile-time constant JSON (`status`, `version: "5"`,
+`glances_version`, `implementation`): a Glances v5 client (`glances -c`)
+requires `/status` to answer JSON with `version == "5"`. A constant keeps the
+probes allocation-free and stateless.
+
 ---
 
 ## 7. Security
