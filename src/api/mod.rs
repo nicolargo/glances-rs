@@ -28,6 +28,8 @@ pub fn api_router(app: Arc<AppState>) -> Router {
         .route("/api/5/alert", get(alert_history))
         .route("/api/5/all/info", get(all_info))
         .route("/api/5/{plugin}/info", get(plugin_info))
+        .route("/api/5/{plugin}/top/{n}", get(plugin_top))
+        .route("/api/5/{plugin}/{field}", get(plugin_field))
         .route("/api/5/{plugin}", get(plugin_stats))
         .with_state(app.clone());
     security::apply_security(routes, app)
@@ -125,6 +127,97 @@ async fn plugin_stats(State(app): State<Arc<AppState>>, Path(name): Path<String>
     }
 }
 
+/// Wake `name` and return its parsed payload, or the error response. Used
+/// by the sub-resource routes only; `/api/5/{plugin}` streams the cached
+/// bytes without parsing.
+async fn plugin_value(app: &Arc<AppState>, name: &str) -> Result<Map<String, Value>, Response> {
+    let Some(id) = PluginId::parse(name).filter(|id| app.is_registered(*id)) else {
+        return Err(not_found(name));
+    };
+    match ensure_plugin(app, id).await {
+        Ok(body) => match serde_json::from_slice::<Value>(&body) {
+            Ok(Value::Object(m)) => Ok(m),
+            _ => Err(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        },
+        Err(EnsureError::NotRegistered) => Err(not_found(name)),
+        Err(EnsureError::Timeout) => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "detail":
+                    format!("plugin '{name}': collection did not start within the guard timeout")
+            })),
+        )
+            .into_response()),
+    }
+}
+
+/// `GET /api/5/{plugin}/{field}` — one field of the payload, Glances v5
+/// style: `{field: value}` for an object plugin, `{field: [value, …]}` (one
+/// per item) for a collection plugin. `404` for an unknown field.
+async fn plugin_field(
+    State(app): State<Arc<AppState>>,
+    Path((name, field)): Path<(String, String)>,
+) -> Response {
+    let body = match plugin_value(&app, &name).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let value = match body.get("data") {
+        Some(Value::Array(items)) => {
+            if !items.iter().any(|i| i.get(&field).is_some()) && !items.is_empty() {
+                return field_not_found(&field);
+            }
+            Value::Array(
+                items
+                    .iter()
+                    .map(|i| i.get(&field).cloned().unwrap_or(Value::Null))
+                    .collect(),
+            )
+        }
+        _ => match body.get(&field) {
+            Some(v) => v.clone(),
+            None => return field_not_found(&field),
+        },
+    };
+    Json(json!({ field: value })).into_response()
+}
+
+/// `GET /api/5/{plugin}/top/{n}` — the first `n` items of a collection
+/// plugin, as a bare array. `404` for an object plugin, `422` for `n < 1`
+/// or a non-numeric `n` (FastAPI's validation status).
+async fn plugin_top(
+    State(app): State<Arc<AppState>>,
+    Path((name, n)): Path<(String, String)>,
+) -> Response {
+    let body = match plugin_value(&app, &name).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
+    let Some(Value::Array(items)) = body.get("data") else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "detail": format!("plugin '{name}' is not a collection") })),
+        )
+            .into_response();
+    };
+    match n.parse::<usize>() {
+        Ok(n) if n >= 1 => Json(items.iter().take(n).collect::<Vec<_>>()).into_response(),
+        _ => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "detail": "n must be an integer >= 1" })),
+        )
+            .into_response(),
+    }
+}
+
+fn field_not_found(field: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "detail": format!("field '{field}' not found") })),
+    )
+        .into_response()
+}
+
 /// `GET /api/5/{plugin}/info` — the static field schema (design spec
 /// 2026-08-02). Inert like `pluginslist`/`alert`: no wake, no store, no
 /// `503`. `default_thresholds` reflects the operator's configured global
@@ -173,6 +266,9 @@ fn field_schema(app: &AppState, id: PluginId, fi: &FieldInfo) -> Value {
     }
     if fi.internal {
         m.insert("internal".into(), json!(true));
+    }
+    if fi.history {
+        m.insert("history".into(), json!(true));
     }
     if fi.watched {
         m.insert("watched".into(), json!(true));

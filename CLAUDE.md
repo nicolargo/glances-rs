@@ -22,6 +22,10 @@ Use the `Makefile` targets; they wrap `cargo` with the flags CI expects.
 - `make test` — `cargo test --locked`.
 - `make lint` — `cargo fmt --all --check` + `cargo clippy --all-targets -D warnings`.
 - `make check` — full local CI pass (lint + test + build); run before pushing.
+- `make compare-glances` — system test: runs reference Glances v5 (`develop`) next
+  to glances-rs and diffs the APIs structurally. Exits 1 on any difference not
+  recorded in `tests/system/known_differences.json` (reviewed with the
+  maintainer, documented in `docs/api.md` §2.1). Not part of CI (needs network).
 - Run one test: `cargo test status_responds_200` or a file's suite with
   `cargo test --test probes`.
 

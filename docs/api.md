@@ -15,13 +15,17 @@
 | `/api/5/{plugin}/info`   | GET    | The plugin's static field schema, keyed by field name (§9) | `200` always, `404` unknown/disabled plugin; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/all/info`        | GET    | Object: `{ "<plugin>": <field schema>, … }` for every registered plugin — the `/all` analogue of `/{plugin}/info` (§9.3) | `200` always; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
+| `/api/5/{plugin}/{field}` | GET   | One field of the payload: `{field: value}` (object plugin) or `{field: [value, …]}` (collection plugin, one per item); `time_since_update`/`_levels` are addressable too | `200`, `404` unknown plugin or field, `503` as `/{plugin}` |
+| `/api/5/{plugin}/top/{n}` | GET   | Collection plugins only: the first `n` items as a bare array | `200`, `404` unknown plugin or not a collection, `422` `n` < 1 or not an integer |
 | `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/api/5/alert`           | GET    | Array of alert events, most-recent last (§8.3) | `200` always, `[]` when empty; never `503` — read-only, does not wake or wait on a collector |
 | `/status`                | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
-`/api/5/token` (Basic auth only), `/api/5/config`. `/api/5/limits` is also
+`/api/5/token` (Basic auth only), `/api/5/config`, `/api/5/args`, `/api/5/{plugin}/limits`,
+`/api/5/all/limits`, `/api/5/{plugin}/history` and the item routes
+`/api/5/{plugin}/{field}/{key}` / `…/value/{value}`. `/api/5/limits` is also
 deliberately not served: glances-rs ships no built-in default thresholds
 (§8 Alerting is config-only), so there is no global limits table to expose —
 the per-field `default_thresholds` already surfaced in `/info` (§9) is the
@@ -48,6 +52,35 @@ check, no wake-up.
 | Auth | Basic + Bearer token (`/token`) | Basic only (v1). |
 | `_levels` (alert thresholds) | Per-field threshold metadata | Populated per §8 Alerting. `{}` when no threshold is configured for that plugin (the default, config-only — no built-in thresholds). |
 | Platform-specific fields | Present per platform/psutil | **Full field parity on Linux** (the primary target); macOS/Windows degrade to the portable subset `sysinfo` exposes. Clients treat absent fields as "not available", exactly as with Glances' platform-specific fields. |
+
+### 2.1 System-test reconciliation (Glances `develop`, 5.0.0b1)
+
+`make compare-glances` (`scripts/compare-glances.sh` →
+`tests/system/compare_glances.py`) starts the reference Glances v5 (`develop`
+branch) next to glances-rs and diffs routes, status codes, payload key sets,
+JSON types and the `/info` schema (never values). Every remaining difference
+was reviewed with the maintainer and is recorded, with its reason, in
+`tests/system/known_differences.json`; the run exits `1` on any **new** one, so
+this table cannot silently drift. Differences accepted as permanent:
+
+| Area | Glances v5 | glances-rs | Why |
+|---|---|---|---|
+| Default thresholds (`_levels`, `/info` `default_thresholds`) | Built-in ladders for cpu, mem, memswap, load, fs, network | None — config-only; `_levels` is `{}` until configured | Deliberate since v0.3.0 (ARCHITECTURE.md §8) |
+| `/api/5/{plugin}/limits`, `/api/5/all/limits`, `/api/5/args` | Served | `404` | No global limits table to expose; no meaningful args |
+| Plugins | 28 (`amps`, `containers`, `core`, `folders`, `gpu`, `ip`, `percpu`, `ports`, `processlist`, `quicklook`, `sensors`, `smart`, `wifi`, …) | 9 (`cpu`, `diskio`, `fs`, `load`, `mem`, `memswap`, `network`, `system`, `uptime`) | Out of v1 scope |
+| `diskio.read_latency` / `write_latency` | Emitted | Not emitted | Extra per-cycle derivation against the footprint goal |
+| `fs.options` | Emitted (mount-option string) | Not emitted | Low value, per-cycle allocation |
+| `cpu.dpc` | Windows only | Not emitted | Linux-first payload |
+| `mem._show_available`, `mem/info` `wired` | Display flag / macOS-BSD field | Not emitted | Display-only / platform-specific |
+| `alias` (fs, diskio, network), `hidden` in `/info` (diskio, network), `network.bytes_all`, `network.speed` | Absent from `/info` or payload | Emitted | glances-rs additions kept for compatibility with earlier glances-rs releases (`alias` only when configured) |
+
+Aligned as a result of the same review: `mem.shared`/`slab`;
+`network.bytes_recv_cumul`/`bytes_sent_cumul`/`errors_in`/`errors_out`/
+`dropped_in`/`dropped_out`; `diskio.read_time`/`write_time` and
+`*_cumul` counters; `/info` `history` flag and the missing `short_name`s
+(the `network.interface_name` short name was dropped, as in Glances);
+`cpu.iowait` is no longer `prominent`; the `/{plugin}/{field}` and
+`/{plugin}/top/{n}` routes.
 
 > **Field parity (Linux).** `glances-rs` reads `/proc/stat`, `/proc/meminfo`,
 > `/sys/class/net`, `/proc/vmstat` and `/proc/diskstats` directly so the Linux
@@ -120,7 +153,9 @@ v4 shape); the per-item objects of a collection plugin carry no
   "active":    31532032,
   "inactive":  552156160,
   "buffers":   16388096,
-  "cached":    366714880
+  "cached":    366714880,
+  "shared":    14733312,
+  "slab":      60706816
 }
 ```
 
@@ -128,9 +163,10 @@ v4 shape); the per-item objects of a collection plugin carry no
 - All sizes in bytes (`u64`).
 - **Linux** (`/proc/meminfo`, psutil formulas): `cached = Cached +
   SReclaimable`, `used = total - free - cached - buffers`. The
-  `active`/`inactive`/`buffers`/`cached` fields are present.
+  `active`/`inactive`/`buffers`/`cached`/`shared`/`slab` fields are present
+  (`shared` = `Shmem`, `slab` = `Slab`).
 - **macOS/Windows:** degrade to `total`/`available`/`percent`/`used`/`free`
-  (the four extra fields absent), as `sysinfo` does not expose them.
+  (the six extra fields absent), as `sysinfo` does not expose them.
   Glances marks them platform-specific too, so clients already tolerate
   their absence. `wired`/`shared` (macOS/BSD only in Glances) are not
   emitted.
@@ -196,6 +232,12 @@ One element per interface; primary key `interface_name`:
       "bytes_recv":     511.2,
       "bytes_sent":     1022.4,
       "bytes_all":      1533.6,
+      "bytes_recv_cumul": 42174504,
+      "bytes_sent_cumul": 1276178,
+      "errors_in":      0.0,
+      "errors_out":     0.0,
+      "dropped_in":     0.0,
+      "dropped_out":    0.0,
       "speed":          0,
       "bytes_speed_rate_per_sec": 62500000,
       "is_up":          true,
@@ -209,6 +251,10 @@ One element per interface; primary key `interface_name`:
 
 - `bytes_recv`/`bytes_sent`/`bytes_all` are **per-second rates** (bytes/s, 1
   decimal). No `_gauge`/`_rate_per_sec` companions.
+- `bytes_*_cumul` are the raw cumulative counters; `errors_in/out` and
+  `dropped_in/out` are **per-second rates** of the error / drop counters
+  (errors from `sysinfo`, drops from `/proc/net/dev` on **Linux only** —
+  always `0.0` elsewhere). `errors_in/out` are alertable (§8).
 - `hidden` — a generic display-filter flag mirroring Glances v5's
   value-based `hide_zero` filter. glances-rs filters interfaces by **name**
   (`show`/`hide`, above) rather than by value, so it never has a reason to
@@ -347,6 +393,12 @@ One element per disk; primary key `disk_name`:
       "write_count": 20.0,
       "read_bytes":  24576.0,
       "write_bytes": 81920.0,
+      "read_time":   12.0,
+      "write_time":  40.0,
+      "read_count_cumul":  1500,
+      "write_count_cumul": 5200,
+      "read_bytes_cumul":  6144000,
+      "write_bytes_cumul": 20971520,
       "hidden":      false
     }
   ],
@@ -360,6 +412,9 @@ One element per disk; primary key `disk_name`:
   over `time_since_update` (§4). `*_bytes` derive from sectors × 512. A disk
   absent from the previous sample is skipped for one cycle; a removed disk
   drops out immediately (§8.1).
+- `read_time`/`write_time` are rates too: milliseconds spent reading /
+  writing per second (diffed `/proc/diskstats` time columns). `*_cumul` are
+  the raw cumulative counters since boot.
 - `hidden` — same generic, always-`false` display-filter flag as `network`
   (§5.4): glances-rs hides disks by name, not by value, so this is emitted
   for payload-shape parity only.
@@ -367,8 +422,8 @@ One element per disk; primary key `disk_name`:
   **Default hide:** `loop.*` and `/dev/loop.*`. `alias` from
   `[plugins.diskio].alias` is added **only when configured**.
 - **Linux only** (`/proc/diskstats`). `sysinfo` exposes no per-disk I/O, so
-  **macOS/Windows return an empty `data` array**. `read_time`/`write_time` and
-  the derived latency fields (present in Glances) are omitted.
+  **macOS/Windows return an empty `data` array**. The derived latency fields
+  (present in Glances) are omitted (§2.1).
 
 ---
 
@@ -466,7 +521,8 @@ if a threshold happens to be configured for it. Each alertable field also
 has a static `prominent` flag (copied from Glances, not configurable) used
 by clients for highlight rendering, and a `watch_direction`: `high` (breach
 when the value rises above a limit) or `low` (breach when it falls below).
-Every v0.3.0 alertable field is `high` — the `low` direction is implemented
+`network`'s `errors_in`/`errors_out` are alertable (no normalisation: thresholds are
+errors per second). Every alertable field is `high` — the `low` direction is implemented
 and unit-tested but not yet used by any shipped field.
 
 Some fields declare `normalize_by`: the level is computed against
@@ -738,11 +794,10 @@ above.
 }
 ```
 
-Note the divergence from Glances v5's `network` field set (§2 of the design
-spec, `docs/superpowers/specs/2026-08-02-info-endpoint-design.md`):
-glances-rs does not collect `errors_in`/`errors_out`/`dropped_in`/
-`dropped_out`, so they are absent from both the data response and `/info` —
 `/info` mirrors what the server actually emits, never Glances' upstream list.
+The `history: true` flag (fields Glances keeps a history for) and the
+`short_name`s follow Glances `develop`; the remaining `/info` differences are
+listed in §2.1.
 
 `diskio/info` carries the same `hidden` entry (`unit: bool`, `internal:
 true`, always `false`), for the same reason — name-based filtering, not

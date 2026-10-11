@@ -64,6 +64,7 @@ pub struct FieldInfo {
     pub primary_key: bool,
     pub rate: bool,
     pub internal: bool,
+    pub history: bool,
     pub watched: bool,
     pub direction: Direction,
     pub prominent: bool,
@@ -80,6 +81,7 @@ impl FieldInfo {
             primary_key: false,
             rate: false,
             internal: false,
+            history: false,
             watched: false,
             direction: Direction::High,
             prominent: false,
@@ -102,6 +104,11 @@ impl FieldInfo {
         self.internal = true;
         self
     }
+    /// Glances marks the field as worth keeping a history for (`/info` only).
+    const fn history(mut self) -> Self {
+        self.history = true;
+        self
+    }
     /// Alertable, `High` direction, with the given prominence.
     const fn watched_high(mut self, prominent: bool) -> Self {
         self.watched = true;
@@ -118,20 +125,22 @@ impl FieldInfo {
 const MEM_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("total", "Total physical memory available.", Unit::Bytes),
     FieldInfo::new("available", "Actual amount of available memory that can be given instantly to processes that request more memory; calculated by summing different memory values depending on the platform (e.g. free + buffers + cached on Linux). Suitable for monitoring actual memory usage in a cross-platform fashion.", Unit::Bytes).short("avail"),
-    FieldInfo::new("percent", "Percentage usage calculated as (total - available) / total * 100.", Unit::Percent).watched_high(true),
+    FieldInfo::new("percent", "Percentage usage calculated as (total - available) / total * 100.", Unit::Percent).history().watched_high(true),
     FieldInfo::new("used", "Memory used, calculated differently depending on the platform and designed for informational purposes only.", Unit::Bytes),
     FieldInfo::new("free", "Memory not being used at all (zeroed) that is readily available; note that this does not reflect the actual memory available — use `available` instead.", Unit::Bytes),
     FieldInfo::new("active", "(UNIX) Memory currently in use or very recently used, resident in RAM.", Unit::Bytes),
     FieldInfo::new("inactive", "(UNIX) Memory that is marked as not used.", Unit::Bytes).short("inacti"),
     FieldInfo::new("buffers", "(Linux, BSD) Cache for items like filesystem metadata.", Unit::Bytes).short("buffer"),
     FieldInfo::new("cached", "(Linux, BSD) Cache for various things (including ZFS cache).", Unit::Bytes),
+    FieldInfo::new("shared", "(BSD) Memory that may be simultaneously accessed by multiple processes.", Unit::Bytes),
+    FieldInfo::new("slab", "(Linux) In-kernel data structures cache.", Unit::Bytes),
 ];
 
 const CPU_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("total", "Sum of all CPU percentages (except idle).", Unit::Percent).watched_high(true),
-    FieldInfo::new("system", "Percent time spent in kernel space. System CPU time is the time spent running code in the operating system kernel.", Unit::Percent).watched_high(false),
-    FieldInfo::new("user", "Percent time spent in user space. User CPU time is the time spent on the processor running the program's code (or code in libraries).", Unit::Percent).watched_high(false),
-    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(true),
+    FieldInfo::new("system", "Percent time spent in kernel space. System CPU time is the time spent running code in the operating system kernel.", Unit::Percent).history().watched_high(false),
+    FieldInfo::new("user", "Percent time spent in user space. User CPU time is the time spent on the processor running the program's code (or code in libraries).", Unit::Percent).history().watched_high(false),
+    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(false),
     FieldInfo::new("idle", "Percent of CPU not used by any program. Every program or task that runs occupies a certain amount of processing time on the CPU; when the CPU has completed all tasks it is idle.", Unit::Percent),
     FieldInfo::new("irq", "(Linux and BSD) Percent time spent servicing hardware and software interrupts.", Unit::Percent),
     FieldInfo::new("nice", "(UNIX) Percent time occupied by user-level processes with a positive nice value (processes that have been niced down).", Unit::Percent),
@@ -145,9 +154,9 @@ const CPU_FIELDS: &[FieldInfo] = &[
 ];
 
 const LOAD_FIELDS: &[FieldInfo] = &[
-    FieldInfo::new("min1", "Average number of processes waiting in the run-queue plus those currently executing, over 1 minute.", Unit::Float).short("1 min"),
-    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).watched_high(false).normalize("cpucore").short("5 min"),
-    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).watched_high(true).normalize("cpucore").short("15 min"),
+    FieldInfo::new("min1", "Average number of processes waiting in the run-queue plus those currently executing, over 1 minute.", Unit::Float).history().short("1 min"),
+    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).history().watched_high(false).normalize("cpucore").short("5 min"),
+    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).history().watched_high(true).normalize("cpucore").short("15 min"),
     FieldInfo::new("cpucore", "Total number of logical CPU cores.", Unit::Number).internal(),
 ];
 
@@ -174,7 +183,7 @@ const MEMSWAP_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("total", "Total swap memory.", Unit::Bytes),
     FieldInfo::new("used", "Used swap memory.", Unit::Bytes),
     FieldInfo::new("free", "Free swap memory.", Unit::Bytes),
-    FieldInfo::new("percent", "Used swap memory as a percentage of total.", Unit::Percent).watched_high(true),
+    FieldInfo::new("percent", "Used swap memory as a percentage of total.", Unit::Percent).history().watched_high(true),
     FieldInfo::new("sin", "Bytes the system has swapped in from disk (per second — v4 reports the cumulative counter; v5 converts it to a rate).", Unit::BytesPerSec).rate().watched_high(false),
     FieldInfo::new("sout", "Bytes the system has swapped out to disk (per second — v4 reports the cumulative counter; v5 converts it to a rate).", Unit::BytesPerSec).rate().watched_high(false),
 ];
@@ -196,14 +205,16 @@ const FS_FIELDS: &[FieldInfo] = &[
         "size",
         "Total size of the filesystem in bytes.",
         Unit::Bytes,
-    ),
-    FieldInfo::new("used", "Used size in bytes.", Unit::Bytes),
-    FieldInfo::new("free", "Free size in bytes.", Unit::Bytes),
+    )
+    .short("Total"),
+    FieldInfo::new("used", "Used size in bytes.", Unit::Bytes).short("Used"),
+    FieldInfo::new("free", "Free size in bytes.", Unit::Bytes).short("Free"),
     FieldInfo::new(
         "percent",
         "Filesystem usage as a percentage of total size.",
         Unit::Percent,
     )
+    .history()
     .watched_high(false),
     FieldInfo::new(
         "alias",
@@ -214,82 +225,35 @@ const FS_FIELDS: &[FieldInfo] = &[
 
 const DISKIO_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("disk_name", "Disk name (e.g. sda, nvme0n1).", Unit::StringT).pk(),
-    FieldInfo::new(
-        "read_count",
-        "Read operations per second (rate of psutil read_count counter).",
-        Unit::Number,
-    )
-    .rate()
-    .internal(),
-    FieldInfo::new(
-        "write_count",
-        "Write operations per second (rate of psutil write_count counter).",
-        Unit::Number,
-    )
-    .rate()
-    .internal(),
-    FieldInfo::new(
-        "read_bytes",
-        "Bytes read per second (rate of psutil read_bytes counter).",
-        Unit::BytesPerSec,
-    )
-    .rate()
-    .watched_high(false),
-    FieldInfo::new(
-        "write_bytes",
-        "Bytes written per second (rate of psutil write_bytes counter).",
-        Unit::BytesPerSec,
-    )
-    .rate()
-    .watched_high(false),
-    FieldInfo::new(
-        "alias",
-        "Operator-defined display alias for the disk; present only when configured.",
-        Unit::StringT,
-    ),
+    FieldInfo::new("read_count", "Read operations per second (rate of psutil read_count counter).", Unit::Number).rate().internal().short("IOR/s"),
+    FieldInfo::new("write_count", "Write operations per second (rate of psutil write_count counter).", Unit::Number).rate().internal().short("IOW/s"),
+    FieldInfo::new("read_time", "Time spent reading, in milliseconds per second (rate of psutil read_time counter).", Unit::Number).rate().internal(),
+    FieldInfo::new("write_time", "Time spent writing, in milliseconds per second (rate of psutil write_time counter).", Unit::Number).rate().internal(),
+    FieldInfo::new("read_bytes_cumul", "Bytes read since boot (cumulative counter).", Unit::Bytes).internal().short("R"),
+    FieldInfo::new("write_bytes_cumul", "Bytes written since boot (cumulative counter).", Unit::Bytes).internal().short("W"),
+    FieldInfo::new("read_count_cumul", "Read operations since boot (cumulative counter).", Unit::Number).internal().short("IOR"),
+    FieldInfo::new("write_count_cumul", "Write operations since boot (cumulative counter).", Unit::Number).internal().short("IOW"),
+    FieldInfo::new("read_bytes", "Bytes read per second (rate of psutil read_bytes counter).", Unit::BytesPerSec).rate().history().watched_high(false).short("R/s"),
+    FieldInfo::new("write_bytes", "Bytes written per second (rate of psutil write_bytes counter).", Unit::BytesPerSec).rate().history().watched_high(false).short("W/s"),
+    FieldInfo::new("alias", "Operator-defined display alias for the disk; present only when configured.", Unit::StringT),
     FieldInfo::new("hidden", "Display-filter flag mirroring Glances v5's hide_zero filter. glances-rs filters interfaces/disks by name (removing them), so no value-based hiding applies and this is always false; emitted for payload-shape parity.", Unit::Bool).internal(),
 ];
 
 const NETWORK_FIELDS: &[FieldInfo] = &[
-    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT)
-        .pk()
-        .short("interface"),
-    FieldInfo::new(
-        "bytes_recv",
-        "Bytes received per second.",
-        Unit::BytesPerSec,
-    )
-    .rate()
-    .watched_high(false)
-    .normalize("bytes_speed_rate_per_sec")
-    .short("Rx/s"),
-    FieldInfo::new("bytes_sent", "Bytes sent per second.", Unit::BytesPerSec)
-        .rate()
-        .watched_high(false)
-        .normalize("bytes_speed_rate_per_sec")
-        .short("Tx/s"),
-    FieldInfo::new(
-        "bytes_all",
-        "Total bytes received and sent per second (bytes_recv + bytes_sent).",
-        Unit::BytesPerSec,
-    )
-    .rate(),
-    FieldInfo::new(
-        "alias",
-        "Operator-defined display alias for the interface; present only when configured.",
-        Unit::StringT,
-    ),
+    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT).pk(),
+    FieldInfo::new("bytes_recv", "Bytes received per second.", Unit::BytesPerSec).rate().history().watched_high(false).normalize("bytes_speed_rate_per_sec").short("Rx/s"),
+    FieldInfo::new("bytes_sent", "Bytes sent per second.", Unit::BytesPerSec).rate().history().watched_high(false).normalize("bytes_speed_rate_per_sec").short("Tx/s"),
+    FieldInfo::new("bytes_recv_cumul", "Bytes received since the interface came up (cumulative counter).", Unit::Bytes).internal().short("Rx"),
+    FieldInfo::new("bytes_sent_cumul", "Bytes sent since the interface came up (cumulative counter).", Unit::Bytes).internal().short("Tx"),
+    FieldInfo::new("errors_in", "Receive errors per second.", Unit::Number).rate().watched_high(false),
+    FieldInfo::new("errors_out", "Transmit errors per second.", Unit::Number).rate().watched_high(false),
+    FieldInfo::new("dropped_in", "Receive packets dropped per second. Linux only (always 0 elsewhere).", Unit::Number).rate(),
+    FieldInfo::new("dropped_out", "Transmit packets dropped per second. Linux only (always 0 elsewhere).", Unit::Number).rate(),
+    FieldInfo::new("bytes_all", "Total bytes received and sent per second (bytes_recv + bytes_sent).", Unit::BytesPerSec).rate(),
+    FieldInfo::new("alias", "Operator-defined display alias for the interface; present only when configured.", Unit::StringT),
     FieldInfo::new("is_up", "Whether the interface is up.", Unit::Bool),
-    FieldInfo::new(
-        "speed",
-        "Maximum interface link speed in bits per second (0 when the OS does not report it).",
-        Unit::BitPerSec,
-    ),
-    FieldInfo::new(
-        "bytes_speed_rate_per_sec",
-        "Estimated per-direction bandwidth capacity in bytes/s. Computed from the interface link speed (Mbit/s) under a full-duplex split assumption: speed_mbits * 1e6 / 8 / 2. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
-        Unit::BytesPerSec,
-    ),
+    FieldInfo::new("speed", "Maximum interface link speed in bits per second (0 when the OS does not report it).", Unit::BitPerSec),
+    FieldInfo::new("bytes_speed_rate_per_sec", "Estimated per-direction bandwidth capacity in bytes/s. Computed from the interface link speed (Mbit/s) under a full-duplex split assumption: speed_mbits * 1e6 / 8 / 2. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.", Unit::BytesPerSec),
     FieldInfo::new("hidden", "Display-filter flag mirroring Glances v5's hide_zero filter. glances-rs filters interfaces/disks by name (removing them), so no value-based hiding applies and this is always false; emitted for payload-shape parity.", Unit::Bool).internal(),
 ];
 
@@ -331,7 +295,7 @@ mod tests {
             (PluginId::Cpu, "total", true, None),
             (PluginId::Cpu, "system", false, None),
             (PluginId::Cpu, "user", false, None),
-            (PluginId::Cpu, "iowait", true, None),
+            (PluginId::Cpu, "iowait", false, None),
             (PluginId::Cpu, "steal", false, None),
             (PluginId::Cpu, "ctx_switches", false, Some("cpucore")),
             (PluginId::Load, "min5", false, Some("cpucore")),
@@ -342,6 +306,8 @@ mod tests {
             (PluginId::Diskio, "read_bytes", false, None),
             (PluginId::Diskio, "write_bytes", false, None),
             (PluginId::Fs, "percent", false, None),
+            (PluginId::Network, "errors_in", false, None),
+            (PluginId::Network, "errors_out", false, None),
             (
                 PluginId::Network,
                 "bytes_recv",

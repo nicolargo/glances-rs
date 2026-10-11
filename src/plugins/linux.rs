@@ -132,6 +132,8 @@ pub struct MemInfo {
     pub cached: u64,
     pub active: u64,
     pub inactive: u64,
+    pub shared: u64,
+    pub slab: u64,
     pub used: u64,
     pub percent: f64,
 }
@@ -183,6 +185,8 @@ pub fn parse_meminfo(content: &str) -> MemInfo {
         cached,
         active: g("Active"),
         inactive: g("Inactive"),
+        shared: g("Shmem"),
+        slab: g("Slab"),
         used,
         percent,
     }
@@ -313,10 +317,10 @@ pub fn parse_swap(meminfo: &str, vmstat: &str, page_size: u64) -> SwapInfo {
 // /proc/diskstats — per-disk I/O counters
 // ---------------------------------------------------------------------------
 
-/// Cumulative `(read_count, write_count, read_bytes, write_bytes)` for one
-/// disk. `*_bytes` are sectors × 512 (the fixed `/proc/diskstats` sector
+/// Cumulative `(read_count, write_count, read_bytes, write_bytes, read_time,
+/// write_time)` for one disk; the times are milliseconds, as in psutil. `*_bytes` are sectors × 512 (the fixed `/proc/diskstats` sector
 /// size, as psutil uses), independent of the device's physical sector size.
-pub type DiskIoCounters = (u64, u64, u64, u64);
+pub type DiskIoCounters = (u64, u64, u64, u64, u64, u64);
 
 pub fn read_diskstats() -> Option<std::collections::HashMap<String, DiskIoCounters>> {
     std::fs::read_to_string("/proc/diskstats")
@@ -338,10 +342,48 @@ pub fn parse_diskstats(content: &str) -> HashMap<String, DiskIoCounters> {
         let read_bytes = num(5).saturating_mul(512);
         let write_count = num(7);
         let write_bytes = num(9).saturating_mul(512);
+        let (read_time, write_time) = (num(6), num(10));
         map.insert(
             f[2].to_string(),
-            (read_count, write_count, read_bytes, write_bytes),
+            (
+                read_count,
+                write_count,
+                read_bytes,
+                write_bytes,
+                read_time,
+                write_time,
+            ),
         );
+    }
+    map
+}
+
+// ---------------------------------------------------------------------------
+// /proc/net/dev — dropped packets
+// ---------------------------------------------------------------------------
+
+/// Cumulative `(rx_dropped, tx_dropped)` packets per interface. `sysinfo`
+/// exposes errors but not drops.
+pub fn read_net_dropped() -> HashMap<String, (u64, u64)> {
+    std::fs::read_to_string("/proc/net/dev")
+        .map(|s| parse_net_dropped(&s))
+        .unwrap_or_default()
+}
+
+pub fn parse_net_dropped(content: &str) -> HashMap<String, (u64, u64)> {
+    let mut map = HashMap::new();
+    // Two header lines, then "  eth0: <rx: bytes packets errs drop ...>
+    // <tx: bytes packets errs drop ...>" (rx drop = col 3, tx drop = col 11).
+    for line in content.lines().skip(2) {
+        let Some((name, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        if f.len() < 12 {
+            continue;
+        }
+        let num = |i: usize| f[i].parse::<u64>().unwrap_or(0);
+        map.insert(name.trim().to_string(), (num(3), num(11)));
     }
     map
 }
@@ -446,6 +488,8 @@ Cached:          100 kB
 SReclaimable:     20 kB
 Active:          200 kB
 Inactive:        150 kB
+Shmem:            30 kB
+Slab:             70 kB
 ";
         let m = parse_meminfo(content);
         assert_eq!(m.total, 1000 * 1024);
@@ -455,6 +499,8 @@ Inactive:        150 kB
         assert_eq!(m.cached, (100 + 20) * 1024); // Cached + SReclaimable
         assert_eq!(m.used, (1000 - 400 - 120 - 50) * 1024); // total-free-cached-buffers
         assert_eq!(m.active, 200 * 1024);
+        assert_eq!(m.shared, 30 * 1024);
+        assert_eq!(m.slab, 70 * 1024);
         assert_eq!(m.percent, 40.0); // (1000-600)/1000
     }
 
@@ -473,9 +519,23 @@ Inactive:        150 kB
 ";
         let m = parse_diskstats(content);
         let sda = m.get("sda").unwrap();
-        // read_count, write_count, read_bytes (4000*512), write_bytes (8000*512)
-        assert_eq!(*sda, (1000, 2000, 4000 * 512, 8000 * 512));
+        // read_count, write_count, read_bytes (4000*512), write_bytes (8000*512),
+        // read_time, write_time (ms)
+        assert_eq!(*sda, (1000, 2000, 4000 * 512, 8000 * 512, 120, 200));
         assert!(m.contains_key("nvme0n1"));
+    }
+
+    #[test]
+    fn parse_net_dropped_reads_rx_and_tx_drop_columns() {
+        let content = "\
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:     100       2    0    0    0     0          0         0      100       2    0    0    0     0       0          0
+  eth0: 1000 10 1 7 0 0 0 0 2000 20 3 9 0 0 0 0
+";
+        let m = parse_net_dropped(content);
+        assert_eq!(m["lo"], (0, 0));
+        assert_eq!(m["eth0"], (7, 9));
     }
 
     #[test]

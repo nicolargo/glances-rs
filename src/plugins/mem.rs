@@ -1,7 +1,7 @@
 //! `mem` plugin — instantaneous, scalar. Payload shape: docs/api.md §5.1.
 //!
 //! On Linux the full Glances v5 field set is read from `/proc/meminfo`
-//! (adding `active`/`inactive`/`buffers`/`cached`). On other platforms the
+//! (adding `active`/`inactive`/`buffers`/`cached`/`shared`/`slab`). On other platforms the
 //! payload degrades to the `total`/`available`/`percent`/`used`/`free`
 //! subset that `sysinfo` exposes portably.
 
@@ -68,6 +68,8 @@ impl Plugin for MemPlugin {
                 "inactive": m.inactive,
                 "buffers": m.buffers,
                 "cached": m.cached,
+                "shared": m.shared,
+                "slab": m.slab,
             }),
             tsu,
         )

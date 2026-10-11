@@ -1,1 +1,170 @@
-{}
+{
+  "cpu:info:ctx_switches:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "cpu:info:iowait:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "cpu:info:only_glances:dpc": {
+    "decision": "platform-windows",
+    "reason": "`dpc` is Windows-only in Glances; glances-rs targets the Linux payload."
+  },
+  "cpu:info:steal:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "cpu:info:system:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "cpu:info:total:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "cpu:info:user:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "cpu:levels:default": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "diskio:field:only_glances:read_latency": {
+    "decision": "kept-out-footprint",
+    "reason": "diskio `*_latency` derived fields are not computed: extra per-cycle work against the footprint goal."
+  },
+  "diskio:field:only_glances:write_latency": {
+    "decision": "kept-out-footprint",
+    "reason": "diskio `*_latency` derived fields are not computed: extra per-cycle work against the footprint goal."
+  },
+  "diskio:info:only_glances:read_latency": {
+    "decision": "kept-out-footprint",
+    "reason": "diskio `*_latency` derived fields are not computed: extra per-cycle work against the footprint goal."
+  },
+  "diskio:info:only_glances:write_latency": {
+    "decision": "kept-out-footprint",
+    "reason": "diskio `*_latency` derived fields are not computed: extra per-cycle work against the footprint goal."
+  },
+  "diskio:info:only_glances_rs:alias": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "diskio:info:only_glances_rs:hidden": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "fs:field:only_glances:options": {
+    "decision": "kept-out-low-value",
+    "reason": "fs `options` (long mount-option string) is not emitted: low value, per-cycle allocation."
+  },
+  "fs:info:only_glances:options": {
+    "decision": "kept-out-low-value",
+    "reason": "fs `options` (long mount-option string) is not emitted: low value, per-cycle allocation."
+  },
+  "fs:info:only_glances_rs:alias": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "fs:info:percent:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "fs:levels:default": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "load:info:min15:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "load:info:min5:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "load:levels:default": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "mem:field:only_glances:_show_available": {
+    "decision": "kept-out-display-flag",
+    "reason": "`_show_available` is a display flag; `wired` is macOS/BSD only. Not emitted."
+  },
+  "mem:info:only_glances:wired": {
+    "decision": "kept-out-display-flag",
+    "reason": "`_show_available` is a display flag; `wired` is macOS/BSD only. Not emitted."
+  },
+  "mem:info:percent:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "mem:levels:default": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "memswap:info:percent:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "memswap:levels:default": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "network:field:only_glances_rs:bytes_all": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "network:field:only_glances_rs:speed": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "network:info:bytes_recv:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "network:info:bytes_sent:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "network:info:errors_in:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "network:info:errors_out:default_thresholds": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "network:info:only_glances_rs:alias": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "network:info:only_glances_rs:bytes_all": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "network:info:only_glances_rs:hidden": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "network:info:only_glances_rs:speed": {
+    "decision": "glances-rs-extra",
+    "reason": "Field kept by glances-rs (alias config, parity `hidden` flag, v0.4.x `bytes_all`/`speed`)."
+  },
+  "network:levels:default": {
+    "decision": "no-builtin-thresholds",
+    "reason": "Glances ships built-in default thresholds and decorates `_levels` out of the box; glances-rs is config-only (deliberate since v0.3.0, ARCHITECTURE.md §8)."
+  },
+  "plugins:missing_in_glances_rs": {
+    "decision": "out-of-scope-v1",
+    "reason": "Plugins and `/limits` routes outside the glances-rs v1 scope (no built-in limits table to expose)."
+  },
+  "route:status:/api/5/all/limits": {
+    "decision": "out-of-scope-v1",
+    "reason": "Plugins and `/limits` routes outside the glances-rs v1 scope (no built-in limits table to expose)."
+  },
+  "route:status:/api/5/mem/limits": {
+    "decision": "out-of-scope-v1",
+    "reason": "Plugins and `/limits` routes outside the glances-rs v1 scope (no built-in limits table to expose)."
+  }
+}

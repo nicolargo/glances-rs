@@ -18,7 +18,10 @@ target), macOS and Windows.
 make build        # release binary at target/release/glances-rs
 ```
 
-Other targets: `make test`, `make lint`, `make check` (full local CI pass).
+Other targets: `make test`, `make lint`, `make check` (full local CI pass),
+`make compare-glances` (system test: diffs the REST API against a reference
+Glances v5 — needs network and Python 3; differences are tracked in
+`tests/system/known_differences.json`, see `docs/api.md` §2.1).
 Without `make`: `cargo build --release`.
 
 ## Quick start

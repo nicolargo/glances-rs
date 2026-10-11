@@ -661,8 +661,10 @@ mod tests {
         assert!(!fs[0].prominent);
 
         let net: Vec<&FieldInfo> = alert_fields(PluginId::Network).collect();
+        // Throughput is normalised by link capacity; error counts are not.
         assert!(
             net.iter()
+                .filter(|f| f.field.starts_with("bytes_"))
                 .all(|f| f.normalize_by == Some("bytes_speed_rate_per_sec"))
         );
         assert!(net.iter().any(|f| f.field == "bytes_recv"));

@@ -26,9 +26,10 @@ use std::time::Instant;
 /// Default `hide` when the operator configures none: virtual loop devices.
 const DEFAULT_HIDE: &[&str] = &["loop.*", "/dev/loop.*"];
 
-/// Cumulative `(read_count, write_count, read_bytes, write_bytes)`.
+/// Cumulative `(read_count, write_count, read_bytes, write_bytes, read_time,
+/// write_time)`; the times are milliseconds.
 #[cfg(target_os = "linux")]
-type Counters = (u64, u64, u64, u64);
+type Counters = (u64, u64, u64, u64, u64, u64);
 
 pub struct DiskioPlugin {
     refresh: Duration,
@@ -139,10 +140,10 @@ fn step(
 ) -> (Vec<Value>, HashMap<String, Counters>) {
     let mut items: Vec<Value> = current
         .iter()
-        .filter_map(|(name, &(rc, wc, rb, wb))| {
+        .filter_map(|(name, &(rc, wc, rb, wb, rt, wt))| {
             // Appearing disk: no reference sample yet — skip this cycle, it
             // gets a rate next cycle (§5.4).
-            let &(prc, pwc, prb, pwb) = previous.get(name)?;
+            let &(prc, pwc, prb, pwb, prt, pwt) = previous.get(name)?;
             // saturating_sub (§5.4): on reboot the new counter can be lower.
             let mut item = json!({
                 "disk_name": name,
@@ -150,6 +151,12 @@ fn step(
                 "write_count": per_sec(wc.saturating_sub(pwc), elapsed),
                 "read_bytes": per_sec(rb.saturating_sub(prb), elapsed),
                 "write_bytes": per_sec(wb.saturating_sub(pwb), elapsed),
+                "read_time": per_sec(rt.saturating_sub(prt), elapsed),
+                "write_time": per_sec(wt.saturating_sub(pwt), elapsed),
+                "read_count_cumul": rc,
+                "write_count_cumul": wc,
+                "read_bytes_cumul": rb,
+                "write_bytes_cumul": wb,
                 "hidden": false,
             });
             // alias only when configured for this disk (matching Glances v5).
@@ -187,8 +194,8 @@ mod tests {
 
     #[test]
     fn nominal_rates_are_per_second() {
-        let prev = counters(&[("sda", (100, 200, 4_000, 8_000))]);
-        let cur = counters(&[("sda", (110, 230, 6_000, 9_000))]);
+        let prev = counters(&[("sda", (100, 200, 4_000, 8_000, 0, 0))]);
+        let cur = counters(&[("sda", (110, 230, 6_000, 9_000, 0, 0))]);
         let (items, _) = step(prev, cur, 2.0, &no_alias());
         assert_eq!(items.len(), 1);
         let item = &items[0];
@@ -197,6 +204,9 @@ mod tests {
         assert_eq!(item["write_count"], 15.0); // (230-200)/2
         assert_eq!(item["read_bytes"], 1_000.0); // (6000-4000)/2
         assert_eq!(item["write_bytes"], 500.0); // (9000-8000)/2
+        assert_eq!(item["read_count_cumul"], 110);
+        assert_eq!(item["write_bytes_cumul"], 9_000);
+        assert_eq!(item["read_time"], 0.0);
         // No gauge / rate_per_sec / per-item time_since_update in v5.
         assert!(item.get("read_count_gauge").is_none());
         assert!(item.get("time_since_update").is_none());
@@ -206,8 +216,8 @@ mod tests {
 
     #[test]
     fn counter_rollback_clamps_to_zero() {
-        let prev = counters(&[("sda", (5_000, 5_000, 5_000, 5_000))]);
-        let cur = counters(&[("sda", (100, 100, 100, 100))]);
+        let prev = counters(&[("sda", (5_000, 5_000, 5_000, 5_000, 0, 0))]);
+        let cur = counters(&[("sda", (100, 100, 100, 100, 0, 0))]);
         let (items, _) = step(prev, cur, 2.0, &no_alias());
         assert_eq!(items[0]["read_count"], 0.0);
         assert_eq!(items[0]["write_bytes"], 0.0);
@@ -215,8 +225,8 @@ mod tests {
 
     #[test]
     fn appearing_disk_is_skipped_for_one_cycle() {
-        let prev = counters(&[("sda", (10, 10, 10, 10))]);
-        let cur = counters(&[("sda", (20, 20, 20, 20)), ("sdb", (5, 5, 5, 5))]);
+        let prev = counters(&[("sda", (10, 10, 10, 10, 0, 0))]);
+        let cur = counters(&[("sda", (20, 20, 20, 20, 0, 0)), ("sdb", (5, 5, 5, 5, 0, 0))]);
         let (items, previous) = step(prev, cur, 1.0, &no_alias());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["disk_name"], "sda");
@@ -226,8 +236,8 @@ mod tests {
 
     #[test]
     fn disappearing_disk_vanishes_from_output_and_state() {
-        let prev = counters(&[("sda", (10, 10, 10, 10)), ("sdb", (9, 9, 9, 9))]);
-        let cur = counters(&[("sda", (20, 20, 20, 20))]);
+        let prev = counters(&[("sda", (10, 10, 10, 10, 0, 0)), ("sdb", (9, 9, 9, 9, 0, 0))]);
+        let cur = counters(&[("sda", (20, 20, 20, 20, 0, 0))]);
         let (items, previous) = step(prev, cur, 1.0, &no_alias());
         assert_eq!(items.len(), 1);
         // The anti-leak rule: previous == current sample, no merge.
@@ -237,8 +247,8 @@ mod tests {
 
     #[test]
     fn alias_is_injected_and_output_sorted() {
-        let prev = counters(&[("sdb", (0, 0, 0, 0)), ("sda", (0, 0, 0, 0))]);
-        let cur = counters(&[("sdb", (1, 1, 1, 1)), ("sda", (1, 1, 1, 1))]);
+        let prev = counters(&[("sdb", (0, 0, 0, 0, 0, 0)), ("sda", (0, 0, 0, 0, 0, 0))]);
+        let cur = counters(&[("sdb", (1, 1, 1, 1, 0, 0)), ("sda", (1, 1, 1, 1, 0, 0))]);
         let alias = HashMap::from([("sda".to_string(), "root-disk".to_string())]);
         let (items, _) = step(prev, cur, 1.0, &alias);
         let names: Vec<&str> = items

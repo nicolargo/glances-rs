@@ -18,8 +18,16 @@ use sysinfo::Networks;
 /// loopback interface.
 const DEFAULT_HIDE: &[&str] = &["docker.*", "lo"];
 
-/// Cumulative (rx, tx) byte counters for one interface.
-type Counters = (u64, u64);
+/// Cumulative counters for one interface.
+#[derive(Clone, Copy, Default)]
+struct Counters {
+    rx: u64,
+    tx: u64,
+    err_in: u64,
+    err_out: u64,
+    drop_in: u64,
+    drop_out: u64,
+}
 
 pub struct NetworkPlugin {
     refresh: Duration,
@@ -117,13 +125,28 @@ impl Plugin for NetworkPlugin {
 }
 
 fn sample(networks: &Networks, filter: &KeyFilter) -> HashMap<String, Counters> {
+    // `sysinfo` has no dropped-packet counter: read it from /proc/net/dev on
+    // Linux (one small file); it stays 0 elsewhere.
+    #[cfg(target_os = "linux")]
+    let dropped = super::linux::read_net_dropped();
     networks
         .iter()
         .filter(|(name, _)| filter.shown(name))
         .map(|(name, data)| {
+            #[cfg(target_os = "linux")]
+            let (drop_in, drop_out) = dropped.get(name.as_str()).copied().unwrap_or_default();
+            #[cfg(not(target_os = "linux"))]
+            let (drop_in, drop_out) = (0, 0);
             (
                 name.clone(),
-                (data.total_received(), data.total_transmitted()),
+                Counters {
+                    rx: data.total_received(),
+                    tx: data.total_transmitted(),
+                    err_in: data.total_errors_on_received(),
+                    err_out: data.total_errors_on_transmitted(),
+                    drop_in,
+                    drop_out,
+                },
             )
         })
         .collect()
@@ -170,20 +193,26 @@ fn step(
 ) -> (Vec<Value>, HashMap<String, Counters>) {
     let mut items: Vec<Value> = current
         .iter()
-        .filter_map(|(name, &(rx, tx))| {
+        .filter_map(|(name, &cur)| {
             // Appearing interface: no reference sample yet — skip this
             // cycle, it gets a rate next cycle (§5.4).
-            let &(prev_rx, prev_tx) = previous.get(name)?;
+            let &prev = previous.get(name)?;
             // saturating_sub (§5.4): on reboot or counter wrap the new
             // value can be lower than the old one — clamp to 0.
-            let recv = rx.saturating_sub(prev_rx);
-            let sent = tx.saturating_sub(prev_tx);
+            let recv = cur.rx.saturating_sub(prev.rx);
+            let sent = cur.tx.saturating_sub(prev.tx);
             let all = recv.saturating_add(sent);
             let mut item = json!({
                 "interface_name": name,
                 "bytes_recv": per_sec(recv, elapsed),
                 "bytes_sent": per_sec(sent, elapsed),
                 "bytes_all": per_sec(all, elapsed),
+                "bytes_recv_cumul": cur.rx,
+                "bytes_sent_cumul": cur.tx,
+                "errors_in": per_sec(cur.err_in.saturating_sub(prev.err_in), elapsed),
+                "errors_out": per_sec(cur.err_out.saturating_sub(prev.err_out), elapsed),
+                "dropped_in": per_sec(cur.drop_in.saturating_sub(prev.drop_in), elapsed),
+                "dropped_out": per_sec(cur.drop_out.saturating_sub(prev.drop_out), elapsed),
                 "hidden": false,
             });
             // alias only when configured for this interface (Glances v5).
@@ -228,7 +257,16 @@ mod tests {
     fn counters(pairs: &[(&str, u64, u64)]) -> HashMap<String, Counters> {
         pairs
             .iter()
-            .map(|&(name, rx, tx)| (name.to_string(), (rx, tx)))
+            .map(|&(name, rx, tx)| {
+                (
+                    name.to_string(),
+                    Counters {
+                        rx,
+                        tx,
+                        ..Counters::default()
+                    },
+                )
+            })
             .collect()
     }
 
@@ -251,6 +289,10 @@ mod tests {
         assert_eq!(item["bytes_recv"], 500.0); // (2000-1000)/2
         assert_eq!(item["bytes_sent"], 250.0); // (2500-2000)/2
         assert_eq!(item["bytes_all"], 750.0);
+        assert_eq!(item["bytes_recv_cumul"], 2_000);
+        assert_eq!(item["bytes_sent_cumul"], 2_500);
+        assert_eq!(item["errors_in"], 0.0);
+        assert_eq!(item["dropped_out"], 0.0);
         // v5: plain rates only, no gauge / rate_per_sec / per-item tsu.
         assert!(item.get("bytes_recv_gauge").is_none());
         assert!(item.get("time_since_update").is_none());
