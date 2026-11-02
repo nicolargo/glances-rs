@@ -1,6 +1,8 @@
 //! Configuration: typed TOML deserialization, file discovery
 //! (order frozen in docs/api.md §7), validation, and minimal CLI parsing.
 
+use crate::plugins::PluginId;
+use crate::plugins::fields::builtin_thresholds;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -133,6 +135,10 @@ pub struct AlertsConfig {
     /// Default hysteresis window in seconds; an observed level must persist
     /// this long before a transition is committed (§2, §5.3).
     pub min_duration_seconds: f64,
+    /// Opt-in: fall back to Glances v5's built-in thresholds for any watched
+    /// field with no configured global threshold. Off by default (config-only
+    /// alerting, silent out of the box).
+    pub use_builtin_defaults: bool,
 }
 
 impl Default for AlertsConfig {
@@ -140,6 +146,7 @@ impl Default for AlertsConfig {
         Self {
             history_size: 200,
             min_duration_seconds: 5.0,
+            use_builtin_defaults: false,
         }
     }
 }
@@ -256,7 +263,13 @@ impl Config {
             for (item, fields) in &plugin.thresholds_by_item {
                 for (field, specific) in fields {
                     check_threshold_order(name, &format!("{item}/{field}"), specific)?;
-                    let global = plugin.thresholds.get(field);
+                    let global = plugin.thresholds.get(field).copied().or_else(|| {
+                        self.alerts
+                            .use_builtin_defaults
+                            .then(|| PluginId::parse(name))
+                            .flatten()
+                            .and_then(|id| builtin_thresholds(id, field))
+                    });
                     let merged = Thresholds {
                         careful: specific.careful.or(global.and_then(|g| g.careful)),
                         warning: specific.warning.or(global.and_then(|g| g.warning)),
@@ -625,6 +638,22 @@ mod tests {
         assert!(args(&["-V"]).unwrap().version);
         assert!(args(&["--config"]).is_err());
         assert!(args(&["--bogus"]).is_err());
+    }
+
+    #[test]
+    fn builtin_defaults_flag_defaults_off_and_parses() {
+        assert!(!Config::default().alerts.use_builtin_defaults);
+        let c = Config::from_toml("[alerts]\nuse_builtin_defaults = true\n").unwrap();
+        assert!(c.alerts.use_builtin_defaults);
+    }
+
+    #[test]
+    fn item_override_must_stay_ordered_against_builtin_defaults() {
+        // fs.percent built-in is 70/80/90: an item `careful = 95` inverts it.
+        let toml = "[plugins.fs.thresholds_by_item.\"/\".percent]\ncareful = 95.0\n";
+        assert!(Config::from_toml(toml).is_ok()); // no global -> nothing to invert
+        let on = format!("[alerts]\nuse_builtin_defaults = true\n{toml}");
+        assert!(Config::from_toml(&on).is_err());
     }
 
     #[test]

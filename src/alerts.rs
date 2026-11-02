@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::{Config, Thresholds};
 use crate::plugins::PluginId;
-use crate::plugins::fields::{Direction, FieldInfo, alert_fields};
+use crate::plugins::fields::{Direction, FieldInfo, alert_fields, builtin_thresholds};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -126,6 +126,25 @@ pub(crate) fn reconcile(
     None
 }
 
+/// The global thresholds in force for `field`: the operator's configured block
+/// if any (it replaces the built-in one as a whole, so a partial block never
+/// mixes with built-in limits), else Glances' built-in defaults when
+/// `[alerts] use_builtin_defaults` is on, else none.
+pub(crate) fn effective_global(config: &Config, id: PluginId, field: &str) -> Option<Thresholds> {
+    config
+        .plugins
+        .get(id.as_str())
+        .and_then(|pc| pc.thresholds.get(field))
+        .copied()
+        .or_else(|| {
+            config
+                .alerts
+                .use_builtin_defaults
+                .then(|| builtin_thresholds(id, field))
+                .flatten()
+        })
+}
+
 /// Resolve the effective limits for `(plugin, item, field)`: item-specific
 /// wins over global, **per limit key** (spec §4.5). Returns `None` when no
 /// limit is configured — the field then produces no `_levels` entry.
@@ -135,13 +154,15 @@ pub(crate) fn resolve(
     item: Option<&str>,
     field: &str,
 ) -> Option<Effective> {
-    let pc = config.plugins.get(id.as_str())?;
-    let global = pc.thresholds.get(field);
-    let specific = item
-        .and_then(|i| pc.thresholds_by_item.get(i))
+    let global = effective_global(config, id, field);
+    let specific = config
+        .plugins
+        .get(id.as_str())
+        .and_then(|pc| item.and_then(|i| pc.thresholds_by_item.get(i)))
         .and_then(|m| m.get(field));
-    let pick =
-        |get: fn(&Thresholds) -> Option<f64>| specific.and_then(get).or(global.and_then(get));
+    let pick = |get: fn(&Thresholds) -> Option<f64>| {
+        specific.and_then(get).or(global.as_ref().and_then(get))
+    };
     let e = Effective {
         careful: pick(|t| t.careful),
         warning: pick(|t| t.warning),
@@ -251,7 +272,9 @@ impl Alerts {
         let has_thresholds = config
             .plugins
             .get(id.as_str())
-            .is_some_and(|p| !p.thresholds.is_empty() || !p.thresholds_by_item.is_empty());
+            .is_some_and(|p| !p.thresholds.is_empty() || !p.thresholds_by_item.is_empty())
+            || (config.alerts.use_builtin_defaults
+                && alert_fields(id).any(|f| f.defaults.is_some()));
         if !has_thresholds {
             return;
         }
@@ -448,6 +471,35 @@ mod tests {
         assert_eq!(payload["_levels"]["percent"]["prominent"], true);
         // but no event yet (min_duration not elapsed).
         assert!(alerts.history().is_empty());
+    }
+
+    #[test]
+    fn builtin_defaults_alert_out_of_the_box_only_when_enabled() {
+        let mut payload = json!({ "percent": 95.0, "time_since_update": 1.0, "_levels": {} });
+        let alerts = Alerts::for_tests("host1");
+
+        // Off (default): silent, as before.
+        alerts.observe(&cfg(""), PluginId::Mem, &mut payload);
+        assert_eq!(payload["_levels"], json!({}));
+
+        // On: mem.percent uses Glances' 50/70/90 ladder.
+        let config = cfg("[alerts]\nuse_builtin_defaults = true\n");
+        alerts.observe(&config, PluginId::Mem, &mut payload);
+        assert_eq!(payload["_levels"]["percent"]["level"], "critical");
+    }
+
+    #[test]
+    fn configured_global_replaces_the_builtin_block_entirely() {
+        let config = cfg("[alerts]\nuse_builtin_defaults = true\n\
+                          [plugins.mem.thresholds.percent]\ncritical = 99.0\n");
+        let t = resolve(&config, PluginId::Mem, None, "percent").unwrap();
+        // Built-in careful/warning (50/70) must not leak into a partial block.
+        assert_eq!(t.careful, None);
+        assert_eq!(t.warning, None);
+        assert_eq!(t.critical, Some(99.0));
+        // A field the operator did not configure still gets its default.
+        let t = resolve(&config, PluginId::Cpu, None, "total").unwrap();
+        assert_eq!(t.warning, Some(70.0));
     }
 
     #[test]

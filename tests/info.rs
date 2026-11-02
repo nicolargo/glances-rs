@@ -120,6 +120,35 @@ async fn default_thresholds_reflects_config() {
 }
 
 #[tokio::test]
+async fn builtin_defaults_are_listed_only_when_enabled() {
+    // Off (default): no configured threshold -> no default_thresholds.
+    let (_, body) = info(Config::default(), "mem").await;
+    assert!(body["percent"].get("default_thresholds").is_none());
+
+    // On: Glances v5's built-in ladder is reported.
+    let config = Config::from_toml("[alerts]\nuse_builtin_defaults = true\n").unwrap();
+    let (_, body) = info(config.clone(), "mem").await;
+    let dt = &body["percent"]["default_thresholds"];
+    assert_eq!(dt["careful"], 50.0);
+    assert_eq!(dt["warning"], 70.0);
+    assert_eq!(dt["critical"], 90.0);
+    // A field without a built-in default stays bare.
+    let (_, body) = info(config, "load").await;
+    assert!(body["min1"].get("default_thresholds").is_none());
+
+    // A configured block replaces the built-in one as a whole.
+    let config = Config::from_toml(
+        "[alerts]\nuse_builtin_defaults = true\n\
+         [plugins.mem.thresholds.percent]\ncritical = 99.0\n",
+    )
+    .unwrap();
+    let (_, body) = info(config, "mem").await;
+    let dt = &body["percent"]["default_thresholds"];
+    assert_eq!(dt["critical"], 99.0);
+    assert!(dt.get("careful").is_none());
+}
+
+#[tokio::test]
 async fn all_info_maps_every_registered_plugin() {
     let (status, body) = info(Config::default(), "all").await; // GET /api/5/all/info
     // NOTE: `info()` builds the URL as /api/5/{arg}/info, so arg "all" hits /api/5/all/info.
