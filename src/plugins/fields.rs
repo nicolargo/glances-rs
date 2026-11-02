@@ -133,7 +133,7 @@ const CPU_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("total", "Sum of all CPU percentages (except idle).", Unit::Percent).watched_high(true),
     FieldInfo::new("system", "Percent time spent in kernel space. System CPU time is the time spent running code in the operating system kernel.", Unit::Percent).watched_high(false),
     FieldInfo::new("user", "Percent time spent in user space. User CPU time is the time spent on the processor running the program's code (or code in libraries).", Unit::Percent).watched_high(false),
-    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(true),
+    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(false),
     FieldInfo::new("idle", "Percent of CPU not used by any program. Every program or task that runs occupies a certain amount of processing time on the CPU; when the CPU has completed all tasks it is idle.", Unit::Percent),
     FieldInfo::new("irq", "(Linux and BSD) Percent time spent servicing hardware and software interrupts.", Unit::Percent),
     FieldInfo::new("nice", "(UNIX) Percent time occupied by user-level processes with a positive nice value (processes that have been niced down).", Unit::Percent),
@@ -320,9 +320,7 @@ const DISKIO_FIELDS: &[FieldInfo] = &[
 ];
 
 const NETWORK_FIELDS: &[FieldInfo] = &[
-    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT)
-        .pk()
-        .short("interface"),
+    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT).pk(),
     FieldInfo::new(
         "bytes_recv",
         "Bytes received per second.",
@@ -428,7 +426,7 @@ mod tests {
             (PluginId::Cpu, "total", true, None),
             (PluginId::Cpu, "system", false, None),
             (PluginId::Cpu, "user", false, None),
-            (PluginId::Cpu, "iowait", true, None),
+            (PluginId::Cpu, "iowait", false, None),
             (PluginId::Cpu, "steal", false, None),
             (PluginId::Cpu, "ctx_switches", false, Some("cpucore")),
             (PluginId::Load, "min5", false, Some("cpucore")),

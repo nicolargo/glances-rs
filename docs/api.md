@@ -623,10 +623,12 @@ key is present only when it applies to that field, absent otherwise:
 | `default_thresholds` | `{careful?, warning?, critical?}` | on watched fields, only when configured (below) |
 | `normalize_by` | string | on fields compared as `value / divisor` (`cpucore` or `bytes_speed_rate_per_sec`) |
 
-**Omitted by design.** Glances also emits `history: true` and
-`strict_thresholds: true` on some fields. glances-rs implements neither a
-per-plugin history route nor strict-threshold semantics, so `/info` never
-emits those keys — it does not advertise a capability the server lacks.
+**Omitted by design.** Glances also emits `history: true`,
+`strict_thresholds: true`, `top_processes_sort` and `threshold_field` on some
+fields. glances-rs implements no per-plugin history route, no
+strict-threshold semantics, no process plugin to sort and no alternative
+threshold key names, so `/info` never emits those keys — it does not
+advertise a capability the server lacks.
 
 **`default_thresholds` reflects config, not built-ins.** Glances ships
 built-in default thresholds and always emits them on watched fields.
@@ -722,7 +724,6 @@ above.
   "interface_name": {
     "description": "Network interface name.",
     "unit": "string",
-    "short_name": "interface",
     "primary_key": true
   },
   "bytes_recv": {

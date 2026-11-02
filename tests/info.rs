@@ -78,7 +78,7 @@ async fn network_info_has_hidden_and_short_names() {
     let (_, body) = info(Config::default(), "network").await;
     assert_eq!(body["hidden"]["unit"], "bool");
     assert_eq!(body["hidden"]["internal"], true);
-    assert_eq!(body["interface_name"]["short_name"], "interface");
+    assert!(body["interface_name"].get("short_name").is_none());
     assert_eq!(body["bytes_recv"]["short_name"], "Rx/s");
 }
 
@@ -102,7 +102,7 @@ async fn cpu_info_internal_and_no_unimplemented_keys() {
     }
     // parity fix visible in /info: ctx_switches normalizes by cpucore.
     assert_eq!(body["ctx_switches"]["normalize_by"], "cpucore");
-    assert_eq!(body["iowait"]["prominent"], true);
+    assert_eq!(body["iowait"]["prominent"], false);
     assert_eq!(body["steal"]["prominent"], false);
 }
 
