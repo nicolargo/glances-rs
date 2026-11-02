@@ -120,20 +120,23 @@ v4 shape); the per-item objects of a collection plugin carry no
   "active":    31532032,
   "inactive":  552156160,
   "buffers":   16388096,
-  "cached":    366714880
+  "cached":    366714880,
+  "shared":    15908864,
+  "slab":      55320576
 }
 ```
 
 - `percent = (total - available) / total * 100` — the Glances formula.
 - All sizes in bytes (`u64`).
-- **Linux** (`/proc/meminfo`, psutil formulas): `cached = Cached +
-  SReclaimable`, `used = total - free - cached - buffers`. The
-  `active`/`inactive`/`buffers`/`cached` fields are present.
+- **Linux** (`/proc/meminfo`): `cached = Cached + SReclaimable`,
+  `shared = Shmem`, `slab = Slab`, and — as in Glances v5 — `used = max(0,
+  total - available)` (not psutil's historical `total - free - cached -
+  buffers`). The `active`/`inactive`/`buffers`/`cached`/`shared`/`slab`
+  fields are present.
 - **macOS/Windows:** degrade to `total`/`available`/`percent`/`used`/`free`
   (the four extra fields absent), as `sysinfo` does not expose them.
   Glances marks them platform-specific too, so clients already tolerate
-  their absence. `wired`/`shared` (macOS/BSD only in Glances) are not
-  emitted.
+  their absence. `wired` (macOS/BSD only in Glances) is not emitted.
 
 ### 5.2 `load` — object, instantaneous
 
@@ -196,19 +199,34 @@ One element per interface; primary key `interface_name`:
       "bytes_recv":     511.2,
       "bytes_sent":     1022.4,
       "bytes_all":      1533.6,
+      "bytes_recv_cumul": 1185247,
+      "bytes_sent_cumul": 1819627,
+      "errors_in":      0.0,
+      "errors_out":     0.0,
+      "dropped_in":     0.0,
+      "dropped_out":    0.0,
       "speed":          0,
-      "bytes_speed_rate_per_sec": 62500000,
+      "bytes_speed_rate_per_sec": 62500000.0,
       "is_up":          true,
       "hidden":         false
     }
   ],
   "time_since_update": 2.004,
-  "_levels": {}
+  "_levels": {},
+  "_key": "interface_name"
 }
 ```
 
 - `bytes_recv`/`bytes_sent`/`bytes_all` are **per-second rates** (bytes/s, 1
   decimal). No `_gauge`/`_rate_per_sec` companions.
+- `bytes_recv_cumul`/`bytes_sent_cumul` — the raw cumulative byte counters
+  (the rates above are derived from them). `errors_in`/`errors_out` and
+  `dropped_in`/`dropped_out` — per-second rates (1 decimal) of the
+  cumulative error / dropped-packet counters. Drops come from
+  `/sys/class/net/<iface>/statistics` and are **Linux only** (omitted on
+  macOS/Windows, where `sysinfo` has no drop counters). `_key` — the name
+  of the item primary-key field, present on every collection plugin.
+  These fields are schema-only: not alertable (§8).
 - `hidden` — a generic display-filter flag mirroring Glances v5's
   value-based `hide_zero` filter. glances-rs filters interfaces by **name**
   (`show`/`hide`, above) rather than by value, so it never has a reason to
@@ -227,7 +245,7 @@ One element per interface; primary key `interface_name`:
   speed in bits/s — Mbps × 1048576, `0` when unknown) are added, both from
   `/sys/class/net`. **macOS/Windows:** `is_up`/`speed` are omitted
   (`sysinfo` does not expose them).
-- `bytes_speed_rate_per_sec` — the per-direction link capacity in bytes/s,
+- `bytes_speed_rate_per_sec` (a float, like Glances) — the per-direction link capacity in bytes/s,
   used as the `normalize_by` divisor for the `bytes_recv`/`bytes_sent` alert
   thresholds (§8.1): `speed_mbits × 1e6 / 8 / 2` (decimal Mbit/s → bytes/s,
   halved for full-duplex per-direction capacity — note this is a different
@@ -310,6 +328,7 @@ One element per mounted filesystem; primary key `mnt_point`:
       "device_name": "/dev/vda1",
       "fs_type":     "ext4",
       "mnt_point":   "/",
+      "options":     "rw,relatime",
       "size":        270553174016,
       "used":        240020131840,
       "free":        30533042176,
@@ -317,22 +336,25 @@ One element per mounted filesystem; primary key `mnt_point`:
     }
   ],
   "time_since_update": 2.004,
-  "_levels": {}
+  "_levels": {},
+  "_key": "mnt_point"
 }
 ```
 
-- All sizes in bytes; `free` is the space available to the caller,
-  `used = size - free`, `percent = used / size * 100` (1 decimal). This
-  slightly overstates usage versus psutil's root-reserve-aware percent (which
-  excludes blocks reserved for root); the gap is the reserved fraction.
-  Alerting (§8) thresholds this same approximate `percent`; the approximation
-  itself is unchanged.
+- All sizes in bytes. **Linux** follows psutil's `disk_usage` (`statvfs`),
+  as Glances v5 does: `size = blocks`, `used = blocks - bfree` (blocks
+  reserved for root count as used), `free = bavail` (space available to an
+  unprivileged caller), `percent = used / (used + free) * 100` (1 decimal).
+  Other platforms fall back to `used = size - free`, `percent = used / size
+  * 100`. Alerting (§8) thresholds this same `percent`.
+- `options` — the mount options string (comma-separated, from
+  `/proc/self/mounts`). **Linux only**; omitted elsewhere or when the mount
+  is not listed. `_key` — the primary-key field name (`mnt_point`).
 - Filesystems are filtered by the configured `show`/`hide` regexes on
   `mnt_point`. **Default hide:** `/boot.*` and `.*/snap.*`. `alias` from
   `[plugins.fs].alias` keyed by mount point is added **only when configured**.
-- **Omitted vs. Glances:** `key` (the primary-key name, dropped for every
-  collection plugin here — see `network`) and `options` (mount flags;
-  `sysinfo` does not expose them). Same payload on every platform.
+- **Omitted vs. Glances:** the top-level `free_space` flag (a TUI display
+  option, not a measurement).
 
 ### 5.9 `diskio` — collection plugin (items under `data`), rate
 
@@ -347,11 +369,20 @@ One element per disk; primary key `disk_name`:
       "write_count": 20.0,
       "read_bytes":  24576.0,
       "write_bytes": 81920.0,
+      "read_time":   0.5,
+      "write_time":  4.0,
+      "read_latency":  0,
+      "write_latency": 0,
+      "read_count_cumul":  12372,
+      "write_count_cumul": 2054,
+      "read_bytes_cumul":  600081408,
+      "write_bytes_cumul": 1452105728,
       "hidden":      false
     }
   ],
   "time_since_update": 2.004,
-  "_levels": {}
+  "_levels": {},
+  "_key": "disk_name"
 }
 ```
 
@@ -360,6 +391,12 @@ One element per disk; primary key `disk_name`:
   over `time_since_update` (§4). `*_bytes` derive from sectors × 512. A disk
   absent from the previous sample is skipped for one cycle; a removed disk
   drops out immediately (§8.1).
+- `read_time`/`write_time` — milliseconds spent on reads / writes **per
+  second** (rate of the `/proc/diskstats` counters). `read_latency`/
+  `write_latency` — mean ms per operation over the interval, truncated to an
+  integer, `0` when no operation happened (Glances v5's `int(time_rate /
+  count_rate)`). `*_cumul` — the raw cumulative counters (operations, and
+  bytes = sectors × 512). Not alertable (§8). `_key` — `disk_name`.
 - `hidden` — same generic, always-`false` display-filter flag as `network`
   (§5.4): glances-rs hides disks by name, not by value, so this is emitted
   for payload-shape parity only.
@@ -367,8 +404,7 @@ One element per disk; primary key `disk_name`:
   **Default hide:** `loop.*` and `/dev/loop.*`. `alias` from
   `[plugins.diskio].alias` is added **only when configured**.
 - **Linux only** (`/proc/diskstats`). `sysinfo` exposes no per-disk I/O, so
-  **macOS/Windows return an empty `data` array**. `read_time`/`write_time` and
-  the derived latency fields (present in Glances) are omitted.
+  **macOS/Windows return an empty `data` array**.
 
 ---
 

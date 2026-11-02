@@ -10,7 +10,7 @@
 //! per-disk I/O, so other platforms return an empty `data` array.
 
 use super::filter::{KeyFilter, hide_or_default};
-use super::{Plugin, PluginId, envelope};
+use super::{Plugin, PluginId, envelope_keyed};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -26,9 +26,8 @@ use std::time::Instant;
 /// Default `hide` when the operator configures none: virtual loop devices.
 const DEFAULT_HIDE: &[&str] = &["loop.*", "/dev/loop.*"];
 
-/// Cumulative `(read_count, write_count, read_bytes, write_bytes)`.
 #[cfg(target_os = "linux")]
-type Counters = (u64, u64, u64, u64);
+use super::linux::DiskIoCounters as Counters;
 
 pub struct DiskioPlugin {
     refresh: Duration,
@@ -101,13 +100,13 @@ impl Plugin for DiskioPlugin {
             &self.alias,
         );
         state.previous = previous;
-        envelope(Value::Array(items), elapsed)
+        envelope_keyed(items, elapsed, "disk_name")
     }
 
     #[cfg(not(target_os = "linux"))]
     async fn collect(&self, state: &mut DiskioState) -> Value {
         // No per-disk I/O counters off Linux (sysinfo does not expose them).
-        envelope(Value::Array(Vec::new()), state.clock.tick())
+        envelope_keyed(Vec::new(), state.clock.tick(), "disk_name")
     }
 }
 
@@ -139,17 +138,37 @@ fn step(
 ) -> (Vec<Value>, HashMap<String, Counters>) {
     let mut items: Vec<Value> = current
         .iter()
-        .filter_map(|(name, &(rc, wc, rb, wb))| {
+        .filter_map(|(name, cur)| {
             // Appearing disk: no reference sample yet — skip this cycle, it
             // gets a rate next cycle (§5.4).
-            let &(prc, pwc, prb, pwb) = previous.get(name)?;
+            let prev = previous.get(name)?;
             // saturating_sub (§5.4): on reboot the new counter can be lower.
+            let d = |c: u64, p: u64| c.saturating_sub(p);
+            let (read_time, write_time) = (
+                d(cur.read_time, prev.read_time),
+                d(cur.write_time, prev.write_time),
+            );
+            let (read_ops, write_ops) = (
+                d(cur.read_count, prev.read_count),
+                d(cur.write_count, prev.write_count),
+            );
             let mut item = json!({
                 "disk_name": name,
-                "read_count": per_sec(rc.saturating_sub(prc), elapsed),
-                "write_count": per_sec(wc.saturating_sub(pwc), elapsed),
-                "read_bytes": per_sec(rb.saturating_sub(prb), elapsed),
-                "write_bytes": per_sec(wb.saturating_sub(pwb), elapsed),
+                "read_count": per_sec(read_ops, elapsed),
+                "write_count": per_sec(write_ops, elapsed),
+                "read_bytes": per_sec(d(cur.read_bytes, prev.read_bytes), elapsed),
+                "write_bytes": per_sec(d(cur.write_bytes, prev.write_bytes), elapsed),
+                "read_time": per_sec(read_time, elapsed),
+                "write_time": per_sec(write_time, elapsed),
+                // Mean ms per operation over the interval, `int()` like
+                // Glances v5 (`diskio/model.py`); 0 when nothing happened.
+                "read_latency": latency(read_time, read_ops),
+                "write_latency": latency(write_time, write_ops),
+                // Raw cumulative counters (the rates above are derived).
+                "read_count_cumul": cur.read_count,
+                "write_count_cumul": cur.write_count,
+                "read_bytes_cumul": cur.read_bytes,
+                "write_bytes_cumul": cur.write_bytes,
                 "hidden": false,
             });
             // alias only when configured for this disk (matching Glances v5).
@@ -161,6 +180,13 @@ fn step(
         .collect();
     items.sort_by(|a, b| a["disk_name"].as_str().cmp(&b["disk_name"].as_str()));
     (items, current)
+}
+
+/// Mean time per operation in whole milliseconds (truncated), 0 when no
+/// operation happened during the interval.
+#[cfg(target_os = "linux")]
+fn latency(time_delta_ms: u64, ops_delta: u64) -> u64 {
+    time_delta_ms.checked_div(ops_delta).unwrap_or(0)
 }
 
 /// Per-second rate of a counter delta over the measured interval.
@@ -181,14 +207,25 @@ mod tests {
         pairs.iter().map(|&(n, c)| (n.to_string(), c)).collect()
     }
 
+    /// Counters with the four historical fields and zeroed time counters.
+    fn c(read_count: u64, write_count: u64, read_bytes: u64, write_bytes: u64) -> Counters {
+        Counters {
+            read_count,
+            write_count,
+            read_bytes,
+            write_bytes,
+            ..Default::default()
+        }
+    }
+
     fn no_alias() -> HashMap<String, String> {
         HashMap::new()
     }
 
     #[test]
     fn nominal_rates_are_per_second() {
-        let prev = counters(&[("sda", (100, 200, 4_000, 8_000))]);
-        let cur = counters(&[("sda", (110, 230, 6_000, 9_000))]);
+        let prev = counters(&[("sda", c(100, 200, 4_000, 8_000))]);
+        let cur = counters(&[("sda", c(110, 230, 6_000, 9_000))]);
         let (items, _) = step(prev, cur, 2.0, &no_alias());
         assert_eq!(items.len(), 1);
         let item = &items[0];
@@ -205,9 +242,36 @@ mod tests {
     }
 
     #[test]
+    fn time_rates_latency_and_cumul_counters() {
+        let prev = counters(&[("sda", c(100, 200, 4_000, 8_000))]);
+        let mut cur_c = c(110, 230, 6_000, 9_000);
+        cur_c.read_time = 50; // 50 ms over 10 reads -> 5 ms/op
+        cur_c.write_time = 31; // 31 ms over 30 writes -> 1 ms/op (truncated)
+        let cur = counters(&[("sda", cur_c)]);
+        let (items, _) = step(prev, cur, 2.0, &no_alias());
+        let item = &items[0];
+        assert_eq!(item["read_time"], 25.0); // 50 ms / 2 s
+        assert_eq!(item["write_time"], 15.5);
+        assert_eq!(item["read_latency"], 5);
+        assert_eq!(item["write_latency"], 1);
+        // Cumulative counters are the raw current values, not deltas.
+        assert_eq!(item["read_count_cumul"], 110);
+        assert_eq!(item["write_bytes_cumul"], 9_000);
+    }
+
+    #[test]
+    fn idle_disk_has_zero_latency() {
+        let prev = counters(&[("sda", c(10, 10, 10, 10))]);
+        let cur = counters(&[("sda", c(10, 10, 10, 10))]);
+        let (items, _) = step(prev, cur, 1.0, &no_alias());
+        assert_eq!(items[0]["read_latency"], 0);
+        assert_eq!(items[0]["write_latency"], 0);
+    }
+
+    #[test]
     fn counter_rollback_clamps_to_zero() {
-        let prev = counters(&[("sda", (5_000, 5_000, 5_000, 5_000))]);
-        let cur = counters(&[("sda", (100, 100, 100, 100))]);
+        let prev = counters(&[("sda", c(5_000, 5_000, 5_000, 5_000))]);
+        let cur = counters(&[("sda", c(100, 100, 100, 100))]);
         let (items, _) = step(prev, cur, 2.0, &no_alias());
         assert_eq!(items[0]["read_count"], 0.0);
         assert_eq!(items[0]["write_bytes"], 0.0);
@@ -215,8 +279,8 @@ mod tests {
 
     #[test]
     fn appearing_disk_is_skipped_for_one_cycle() {
-        let prev = counters(&[("sda", (10, 10, 10, 10))]);
-        let cur = counters(&[("sda", (20, 20, 20, 20)), ("sdb", (5, 5, 5, 5))]);
+        let prev = counters(&[("sda", c(10, 10, 10, 10))]);
+        let cur = counters(&[("sda", c(20, 20, 20, 20)), ("sdb", c(5, 5, 5, 5))]);
         let (items, previous) = step(prev, cur, 1.0, &no_alias());
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["disk_name"], "sda");
@@ -226,8 +290,8 @@ mod tests {
 
     #[test]
     fn disappearing_disk_vanishes_from_output_and_state() {
-        let prev = counters(&[("sda", (10, 10, 10, 10)), ("sdb", (9, 9, 9, 9))]);
-        let cur = counters(&[("sda", (20, 20, 20, 20))]);
+        let prev = counters(&[("sda", c(10, 10, 10, 10)), ("sdb", c(9, 9, 9, 9))]);
+        let cur = counters(&[("sda", c(20, 20, 20, 20))]);
         let (items, previous) = step(prev, cur, 1.0, &no_alias());
         assert_eq!(items.len(), 1);
         // The anti-leak rule: previous == current sample, no merge.
@@ -237,8 +301,8 @@ mod tests {
 
     #[test]
     fn alias_is_injected_and_output_sorted() {
-        let prev = counters(&[("sdb", (0, 0, 0, 0)), ("sda", (0, 0, 0, 0))]);
-        let cur = counters(&[("sdb", (1, 1, 1, 1)), ("sda", (1, 1, 1, 1))]);
+        let prev = counters(&[("sdb", c(0, 0, 0, 0)), ("sda", c(0, 0, 0, 0))]);
+        let cur = counters(&[("sdb", c(1, 1, 1, 1)), ("sda", c(1, 1, 1, 1))]);
         let alias = HashMap::from([("sda".to_string(), "root-disk".to_string())]);
         let (items, _) = step(prev, cur, 1.0, &alias);
         let names: Vec<&str> = items

@@ -132,6 +132,8 @@ pub struct MemInfo {
     pub cached: u64,
     pub active: u64,
     pub inactive: u64,
+    pub shared: u64,
+    pub slab: u64,
     pub used: u64,
     pub percent: f64,
 }
@@ -165,11 +167,8 @@ pub fn parse_meminfo(content: &str) -> MemInfo {
     let buffers = g("Buffers");
     // psutil: cached = Cached + SReclaimable.
     let cached = g("Cached") + g("SReclaimable");
-    // psutil: used = total - free - cached - buffers.
-    let used = total
-        .saturating_sub(free)
-        .saturating_sub(cached)
-        .saturating_sub(buffers);
+    // Glances v5 (`mem/model.py`): used = max(0, total - available).
+    let used = total.saturating_sub(available);
     let percent = if total == 0 {
         0.0
     } else {
@@ -183,6 +182,8 @@ pub fn parse_meminfo(content: &str) -> MemInfo {
         cached,
         active: g("Active"),
         inactive: g("Inactive"),
+        shared: g("Shmem"),
+        slab: g("Slab"),
         used,
         percent,
     }
@@ -208,6 +209,19 @@ pub struct IfaceMeta {
 /// `speed` field) — Glances deliberately scales the two fields differently.
 pub(crate) fn speed_capacity_bytes_per_dir(mbps: u64) -> u64 {
     mbps * 1_000_000 / 8 / 2
+}
+
+/// Cumulative `(rx_dropped, tx_dropped)` packets of one interface, from
+/// `/sys/class/net/<name>/statistics` (what psutil's `dropin`/`dropout` read
+/// from `/proc/net/dev`). `sysinfo` does not expose drop counters.
+pub fn read_iface_drops(name: &str) -> (u64, u64) {
+    let read = |file: &str| {
+        std::fs::read_to_string(format!("/sys/class/net/{name}/statistics/{file}"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    (read("rx_dropped"), read("tx_dropped"))
 }
 
 pub fn read_iface_meta(name: &str) -> IfaceMeta {
@@ -310,13 +324,103 @@ pub fn parse_swap(meminfo: &str, vmstat: &str, page_size: u64) -> SwapInfo {
 }
 
 // ---------------------------------------------------------------------------
+// statvfs + /proc/self/mounts — filesystem usage
+// ---------------------------------------------------------------------------
+
+/// Filesystem usage with psutil's `disk_usage` semantics (which Glances v5
+/// reports as-is): `total = blocks`, `used = blocks - bfree` (root-reserved
+/// blocks count as used), `free = bavail` (what an unprivileged caller can
+/// still write). `None` when `statvfs` fails.
+pub fn fs_usage(mount: &str) -> Option<(u64, u64, u64)> {
+    let path = std::ffi::CString::new(mount).ok()?;
+    let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is a valid NUL-terminated string and `st` is a valid
+    // out-pointer; the struct is only read after a successful (0) return.
+    let st = unsafe {
+        if libc::statvfs(path.as_ptr(), st.as_mut_ptr()) != 0 {
+            return None;
+        }
+        st.assume_init()
+    };
+    let frsize = st.f_frsize as u64;
+    let total = (st.f_blocks as u64).saturating_mul(frsize);
+    let used = (st.f_blocks as u64)
+        .saturating_sub(st.f_bfree as u64)
+        .saturating_mul(frsize);
+    let free = (st.f_bavail as u64).saturating_mul(frsize);
+    Some((total, used, free))
+}
+
+/// psutil's `usage_percent(used, total_user=used + free)`, 1 decimal.
+pub fn fs_percent(used: u64, free: u64) -> f64 {
+    let denom = used.saturating_add(free);
+    if denom == 0 {
+        0.0
+    } else {
+        round1(used as f64 / denom as f64 * 100.0)
+    }
+}
+
+/// Mount point -> comma-separated mount options, from `/proc/self/mounts`
+/// (psutil's `disk_partitions().opts`). Empty when unreadable.
+pub fn read_mount_options() -> HashMap<String, String> {
+    std::fs::read_to_string("/proc/self/mounts")
+        .map(|s| parse_mount_options(&s))
+        .unwrap_or_default()
+}
+
+pub fn parse_mount_options(content: &str) -> HashMap<String, String> {
+    content
+        .lines()
+        .filter_map(|line| {
+            // device mountpoint fstype options dump pass
+            let mut f = line.split_whitespace();
+            let mnt = unescape_mount(f.nth(1)?);
+            let opts = f.nth(1)?;
+            Some((mnt, opts.to_string()))
+        })
+        .collect()
+}
+
+/// Decode the `\040`-style octal escapes `/proc/self/mounts` uses for
+/// spaces, tabs, newlines and backslashes in paths.
+fn unescape_mount(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 4 <= b.len()
+            && let Ok(oct) = std::str::from_utf8(&b[i + 1..i + 4])
+            && let Ok(v) = u8::from_str_radix(oct, 8)
+        {
+            out.push(v);
+            i += 4;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// ---------------------------------------------------------------------------
 // /proc/diskstats — per-disk I/O counters
 // ---------------------------------------------------------------------------
 
-/// Cumulative `(read_count, write_count, read_bytes, write_bytes)` for one
-/// disk. `*_bytes` are sectors × 512 (the fixed `/proc/diskstats` sector
-/// size, as psutil uses), independent of the device's physical sector size.
-pub type DiskIoCounters = (u64, u64, u64, u64);
+/// Cumulative counters for one disk, in `/proc/diskstats` order.
+/// `*_bytes` are sectors × 512 (the fixed `/proc/diskstats` sector size, as
+/// psutil uses), independent of the device's physical sector size; `*_time`
+/// are milliseconds spent on reads / writes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DiskIoCounters {
+    pub read_count: u64,
+    pub write_count: u64,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub read_time: u64,
+    pub write_time: u64,
+}
 
 pub fn read_diskstats() -> Option<std::collections::HashMap<String, DiskIoCounters>> {
     std::fs::read_to_string("/proc/diskstats")
@@ -334,13 +438,16 @@ pub fn parse_diskstats(content: &str) -> HashMap<String, DiskIoCounters> {
             continue;
         }
         let num = |i: usize| f[i].parse::<u64>().unwrap_or(0);
-        let read_count = num(3);
-        let read_bytes = num(5).saturating_mul(512);
-        let write_count = num(7);
-        let write_bytes = num(9).saturating_mul(512);
         map.insert(
             f[2].to_string(),
-            (read_count, write_count, read_bytes, write_bytes),
+            DiskIoCounters {
+                read_count: num(3),
+                write_count: num(7),
+                read_bytes: num(5).saturating_mul(512),
+                write_bytes: num(9).saturating_mul(512),
+                read_time: num(6),
+                write_time: num(10),
+            },
         );
     }
     map
@@ -446,6 +553,8 @@ Cached:          100 kB
 SReclaimable:     20 kB
 Active:          200 kB
 Inactive:        150 kB
+Shmem:            30 kB
+Slab:             70 kB
 ";
         let m = parse_meminfo(content);
         assert_eq!(m.total, 1000 * 1024);
@@ -453,8 +562,10 @@ Inactive:        150 kB
         assert_eq!(m.available, 600 * 1024);
         assert_eq!(m.buffers, 50 * 1024);
         assert_eq!(m.cached, (100 + 20) * 1024); // Cached + SReclaimable
-        assert_eq!(m.used, (1000 - 400 - 120 - 50) * 1024); // total-free-cached-buffers
+        assert_eq!(m.used, (1000 - 600) * 1024); // total - available (Glances v5)
         assert_eq!(m.active, 200 * 1024);
+        assert_eq!(m.shared, 30 * 1024);
+        assert_eq!(m.slab, 70 * 1024);
         assert_eq!(m.percent, 40.0); // (1000-600)/1000
     }
 
@@ -474,8 +585,37 @@ Inactive:        150 kB
         let m = parse_diskstats(content);
         let sda = m.get("sda").unwrap();
         // read_count, write_count, read_bytes (4000*512), write_bytes (8000*512)
-        assert_eq!(*sda, (1000, 2000, 4000 * 512, 8000 * 512));
+        assert_eq!(
+            *sda,
+            DiskIoCounters {
+                read_count: 1000,
+                write_count: 2000,
+                read_bytes: 4000 * 512,
+                write_bytes: 8000 * 512,
+                read_time: 120,
+                write_time: 200,
+            }
+        );
         assert!(m.contains_key("nvme0n1"));
+    }
+
+    #[test]
+    fn mount_options_are_keyed_by_unescaped_mount_point() {
+        let content = "\
+/dev/vda / ext4 rw,relatime 0 0
+/dev/sdb1 /mnt/my\\040disk ext4 ro,noatime 0 0
+";
+        let m = parse_mount_options(content);
+        assert_eq!(m["/"], "rw,relatime");
+        assert_eq!(m["/mnt/my disk"], "ro,noatime");
+    }
+
+    #[test]
+    fn fs_percent_follows_psutil_user_total() {
+        // used 750, free (bavail) 250 -> 75.0 %; reserved blocks are in
+        // neither term of the denominator.
+        assert_eq!(fs_percent(750, 250), 75.0);
+        assert_eq!(fs_percent(0, 0), 0.0);
     }
 
     #[test]
