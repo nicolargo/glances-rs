@@ -53,6 +53,16 @@ pub(crate) fn envelope(stats: Value, time_since_update: f64) -> Value {
     out
 }
 
+/// `envelope` for a collection plugin: also publishes the item primary-key
+/// field name as `_key`, as Glances v5 does.
+pub(crate) fn envelope_keyed(items: Vec<Value>, time_since_update: f64, key: &str) -> Value {
+    let mut out = envelope(Value::Array(items), time_since_update);
+    if let Some(map) = out.as_object_mut() {
+        map.insert("_key".into(), json!(key));
+    }
+    out
+}
+
 /// Inter-cycle stopwatch for `time_since_update`. Instantaneous plugins keep
 /// one to report the elapsed seconds since their previous cycle; rate plugins
 /// already measure their own interval and don't need it.

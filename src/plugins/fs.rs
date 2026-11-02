@@ -5,12 +5,14 @@
 //! Glances v5 shape: items under `data`, a single top-level
 //! `time_since_update` + `_levels`. Sourced from `sysinfo::Disks`
 //! (cross-platform, like `network`). `used`/`percent` are derived as
-//! `size - free` (free = space available to the caller); this slightly
-//! overstates usage versus psutil's root-reserve-aware percent — revisit when
-//! alerting needs exact thresholds. `/boot` and snap mounts hidden by default.
+//! `size - free` off Linux; on Linux they follow psutil's `disk_usage`
+//! (`statvfs`: root-reserved blocks count as used, `percent` is
+//! `used / (used + free)`) like Glances v5, and each item carries the mount
+//! `options` from `/proc/self/mounts`. `/boot` and snap mounts hidden by
+//! default.
 
 use super::filter::{KeyFilter, hide_or_default};
-use super::{Clock, Plugin, PluginId, envelope, round1};
+use super::{Clock, Plugin, PluginId, envelope_keyed, round1};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -58,7 +60,9 @@ impl Default for FsState {
 }
 
 /// `used` and `percent` from total size and caller-available free space.
-/// `percent = (size - free) / size`, rounded to Glances' 1 decimal.
+/// `percent = (size - free) / size`, rounded to Glances' 1 decimal. Fallback
+/// for platforms without `statvfs`.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn usage(size: u64, free: u64) -> (u64, f64) {
     let used = size.saturating_sub(free);
     let percent = if size == 0 {
@@ -83,6 +87,8 @@ impl Plugin for FsPlugin {
     async fn collect(&self, state: &mut FsState) -> Value {
         // Re-list each cycle so freshly (un)mounted filesystems are tracked.
         state.disks.refresh(true);
+        #[cfg(target_os = "linux")]
+        let options = super::linux::read_mount_options();
 
         let mut items: Vec<Value> = state
             .disks
@@ -94,8 +100,23 @@ impl Plugin for FsPlugin {
                 if !self.filter.shown(&mnt) {
                     return None;
                 }
-                let size = disk.total_space();
-                let (used, percent) = usage(size, disk.available_space());
+                #[cfg(target_os = "linux")]
+                let (size, used, free, percent) = match super::linux::fs_usage(&mnt) {
+                    Some((size, used, free)) => {
+                        (size, used, free, super::linux::fs_percent(used, free))
+                    }
+                    None => {
+                        let (size, free) = (disk.total_space(), disk.available_space());
+                        let (used, percent) = usage(size, free);
+                        (size, used, free, percent)
+                    }
+                };
+                #[cfg(not(target_os = "linux"))]
+                let (size, used, free, percent) = {
+                    let (size, free) = (disk.total_space(), disk.available_space());
+                    let (used, percent) = usage(size, free);
+                    (size, used, free, percent)
+                };
                 // alias only when configured for this mount (Glances v5).
                 let alias = self.alias.get(&mnt).cloned();
                 let mut item = json!({
@@ -104,9 +125,13 @@ impl Plugin for FsPlugin {
                     "mnt_point": mnt,
                     "size": size,
                     "used": used,
-                    "free": disk.available_space(),
+                    "free": free,
                     "percent": percent,
                 });
+                #[cfg(target_os = "linux")]
+                if let Some(opts) = options.get(&mnt) {
+                    item["options"] = json!(opts);
+                }
                 if let Some(a) = alias {
                     item["alias"] = json!(a);
                 }
@@ -114,7 +139,7 @@ impl Plugin for FsPlugin {
             })
             .collect();
         items.sort_by(|a, b| a["mnt_point"].as_str().cmp(&b["mnt_point"].as_str()));
-        envelope(Value::Array(items), state.clock.tick())
+        envelope_keyed(items, state.clock.tick(), "mnt_point")
     }
 }
 
@@ -141,6 +166,7 @@ mod tests {
         // v5 envelope: items under data, top-level tsu + _levels.
         assert!(value["time_since_update"].is_number());
         assert_eq!(value["_levels"], json!({}));
+        assert_eq!(value["_key"], "mnt_point");
         let items = value["data"].as_array().expect("data is an array");
         for item in items {
             for field in [

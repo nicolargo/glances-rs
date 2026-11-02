@@ -125,6 +125,8 @@ const MEM_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("inactive", "(UNIX) Memory that is marked as not used.", Unit::Bytes).short("inacti"),
     FieldInfo::new("buffers", "(Linux, BSD) Cache for items like filesystem metadata.", Unit::Bytes).short("buffer"),
     FieldInfo::new("cached", "(Linux, BSD) Cache for various things (including ZFS cache).", Unit::Bytes),
+    FieldInfo::new("shared", "(BSD) Memory that may be simultaneously accessed by multiple processes.", Unit::Bytes),
+    FieldInfo::new("slab", "(Linux) In-kernel data structures cache.", Unit::Bytes),
 ];
 
 const CPU_FIELDS: &[FieldInfo] = &[
@@ -196,15 +198,22 @@ const FS_FIELDS: &[FieldInfo] = &[
         "size",
         "Total size of the filesystem in bytes.",
         Unit::Bytes,
-    ),
-    FieldInfo::new("used", "Used size in bytes.", Unit::Bytes),
-    FieldInfo::new("free", "Free size in bytes.", Unit::Bytes),
+    )
+    .short("Total"),
+    FieldInfo::new("used", "Used size in bytes.", Unit::Bytes).short("Used"),
+    FieldInfo::new("free", "Free size in bytes.", Unit::Bytes).short("Free"),
     FieldInfo::new(
         "percent",
         "Filesystem usage as a percentage of total size.",
         Unit::Percent,
     )
     .watched_high(false),
+    FieldInfo::new(
+        "options",
+        "Mount options string (comma-separated).",
+        Unit::StringT,
+    )
+    .internal(),
     FieldInfo::new(
         "alias",
         "Operator-defined display alias for the mount point; present only when configured.",
@@ -220,28 +229,88 @@ const DISKIO_FIELDS: &[FieldInfo] = &[
         Unit::Number,
     )
     .rate()
-    .internal(),
+    .internal()
+    .short("IOR/s"),
     FieldInfo::new(
         "write_count",
         "Write operations per second (rate of psutil write_count counter).",
         Unit::Number,
     )
     .rate()
+    .internal()
+    .short("IOW/s"),
+    FieldInfo::new(
+        "read_time",
+        "Time spent reading, in milliseconds per second (rate of psutil read_time counter).",
+        Unit::Number,
+    )
+    .rate()
     .internal(),
+    FieldInfo::new(
+        "write_time",
+        "Time spent writing, in milliseconds per second (rate of psutil write_time counter).",
+        Unit::Number,
+    )
+    .rate()
+    .internal(),
+    FieldInfo::new(
+        "read_latency",
+        "Mean time spent reading per operation, in milliseconds.",
+        Unit::Number,
+    )
+    .internal()
+    .short("ms/opR"),
+    FieldInfo::new(
+        "write_latency",
+        "Mean time spent writing per operation, in milliseconds.",
+        Unit::Number,
+    )
+    .internal()
+    .short("ms/opW"),
+    FieldInfo::new(
+        "read_bytes_cumul",
+        "Bytes read since boot (cumulative counter).",
+        Unit::Bytes,
+    )
+    .internal()
+    .short("R"),
+    FieldInfo::new(
+        "write_bytes_cumul",
+        "Bytes written since boot (cumulative counter).",
+        Unit::Bytes,
+    )
+    .internal()
+    .short("W"),
+    FieldInfo::new(
+        "read_count_cumul",
+        "Read operations since boot (cumulative counter).",
+        Unit::Number,
+    )
+    .internal()
+    .short("IOR"),
+    FieldInfo::new(
+        "write_count_cumul",
+        "Write operations since boot (cumulative counter).",
+        Unit::Number,
+    )
+    .internal()
+    .short("IOW"),
     FieldInfo::new(
         "read_bytes",
         "Bytes read per second (rate of psutil read_bytes counter).",
         Unit::BytesPerSec,
     )
     .rate()
-    .watched_high(false),
+    .watched_high(false)
+    .short("R/s"),
     FieldInfo::new(
         "write_bytes",
         "Bytes written per second (rate of psutil write_bytes counter).",
         Unit::BytesPerSec,
     )
     .rate()
-    .watched_high(false),
+    .watched_high(false)
+    .short("W/s"),
     FieldInfo::new(
         "alias",
         "Operator-defined display alias for the disk; present only when configured.",
@@ -268,6 +337,34 @@ const NETWORK_FIELDS: &[FieldInfo] = &[
         .watched_high(false)
         .normalize("bytes_speed_rate_per_sec")
         .short("Tx/s"),
+    FieldInfo::new(
+        "bytes_recv_cumul",
+        "Bytes received since the interface came up (cumulative counter).",
+        Unit::Bytes,
+    )
+    .internal()
+    .short("Rx"),
+    FieldInfo::new(
+        "bytes_sent_cumul",
+        "Bytes sent since the interface came up (cumulative counter).",
+        Unit::Bytes,
+    )
+    .internal()
+    .short("Tx"),
+    FieldInfo::new("errors_in", "Receive errors per second.", Unit::Number).rate(),
+    FieldInfo::new("errors_out", "Send errors per second.", Unit::Number).rate(),
+    FieldInfo::new(
+        "dropped_in",
+        "Receive packets dropped per second.",
+        Unit::Number,
+    )
+    .rate(),
+    FieldInfo::new(
+        "dropped_out",
+        "Send packets dropped per second.",
+        Unit::Number,
+    )
+    .rate(),
     FieldInfo::new(
         "bytes_all",
         "Total bytes received and sent per second (bytes_recv + bytes_sent).",

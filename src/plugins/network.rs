@@ -7,7 +7,7 @@
 //! `/sys/class/net`). Docker and loopback interfaces are hidden by default.
 
 use super::filter::{KeyFilter, hide_or_default};
-use super::{Plugin, PluginId, RATE_WARMUP, envelope, round1};
+use super::{Plugin, PluginId, RATE_WARMUP, envelope_keyed, round1};
 use crate::config::Config;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -18,8 +18,17 @@ use sysinfo::Networks;
 /// loopback interface.
 const DEFAULT_HIDE: &[&str] = &["docker.*", "lo"];
 
-/// Cumulative (rx, tx) byte counters for one interface.
-type Counters = (u64, u64);
+/// Cumulative counters for one interface. `drops` is `(rx, tx)` dropped
+/// packets, `None` where the platform does not expose them (non-Linux:
+/// `sysinfo` has no drop counters), so the `dropped_*` fields are omitted.
+#[derive(Clone, Copy, Default)]
+struct Counters {
+    rx: u64,
+    tx: u64,
+    err_in: u64,
+    err_out: u64,
+    drops: Option<(u64, u64)>,
+}
 
 pub struct NetworkPlugin {
     refresh: Duration,
@@ -112,7 +121,7 @@ impl Plugin for NetworkPlugin {
             &self.alias,
         );
         state.previous = previous;
-        envelope(Value::Array(items), elapsed)
+        envelope_keyed(items, elapsed, "interface_name")
     }
 }
 
@@ -123,10 +132,26 @@ fn sample(networks: &Networks, filter: &KeyFilter) -> HashMap<String, Counters> 
         .map(|(name, data)| {
             (
                 name.clone(),
-                (data.total_received(), data.total_transmitted()),
+                Counters {
+                    rx: data.total_received(),
+                    tx: data.total_transmitted(),
+                    err_in: data.total_errors_on_received(),
+                    err_out: data.total_errors_on_transmitted(),
+                    drops: drops(name),
+                },
             )
         })
         .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn drops(name: &str) -> Option<(u64, u64)> {
+    Some(super::linux::read_iface_drops(name))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn drops(_name: &str) -> Option<(u64, u64)> {
+    None
 }
 
 /// Status of each named interface. Linux reads `/sys/class/net`; other
@@ -170,22 +195,31 @@ fn step(
 ) -> (Vec<Value>, HashMap<String, Counters>) {
     let mut items: Vec<Value> = current
         .iter()
-        .filter_map(|(name, &(rx, tx))| {
+        .filter_map(|(name, cur)| {
             // Appearing interface: no reference sample yet — skip this
             // cycle, it gets a rate next cycle (§5.4).
-            let &(prev_rx, prev_tx) = previous.get(name)?;
+            let prev = previous.get(name)?;
             // saturating_sub (§5.4): on reboot or counter wrap the new
             // value can be lower than the old one — clamp to 0.
-            let recv = rx.saturating_sub(prev_rx);
-            let sent = tx.saturating_sub(prev_tx);
+            let recv = cur.rx.saturating_sub(prev.rx);
+            let sent = cur.tx.saturating_sub(prev.tx);
             let all = recv.saturating_add(sent);
             let mut item = json!({
                 "interface_name": name,
                 "bytes_recv": per_sec(recv, elapsed),
                 "bytes_sent": per_sec(sent, elapsed),
                 "bytes_all": per_sec(all, elapsed),
+                // Raw cumulative byte counters (the rates above are derived).
+                "bytes_recv_cumul": cur.rx,
+                "bytes_sent_cumul": cur.tx,
+                "errors_in": per_sec(cur.err_in.saturating_sub(prev.err_in), elapsed),
+                "errors_out": per_sec(cur.err_out.saturating_sub(prev.err_out), elapsed),
                 "hidden": false,
             });
+            if let (Some((cdi, cdo)), Some((pdi, pdo))) = (cur.drops, prev.drops) {
+                item["dropped_in"] = json!(per_sec(cdi.saturating_sub(pdi), elapsed));
+                item["dropped_out"] = json!(per_sec(cdo.saturating_sub(pdo), elapsed));
+            }
             // alias only when configured for this interface (Glances v5).
             if let Some(a) = alias.get(name) {
                 item["alias"] = json!(a);
@@ -198,7 +232,8 @@ fn step(
                     item["speed"] = json!(speed);
                 }
                 if let Some(cap) = m.bytes_speed_rate_per_sec {
-                    item["bytes_speed_rate_per_sec"] = json!(cap);
+                    // Float like Glances (`0.0`, not `0`).
+                    item["bytes_speed_rate_per_sec"] = json!(cap as f64);
                 }
             }
             Some(item)
@@ -228,7 +263,16 @@ mod tests {
     fn counters(pairs: &[(&str, u64, u64)]) -> HashMap<String, Counters> {
         pairs
             .iter()
-            .map(|&(name, rx, tx)| (name.to_string(), (rx, tx)))
+            .map(|&(name, rx, tx)| {
+                (
+                    name.to_string(),
+                    Counters {
+                        rx,
+                        tx,
+                        ..Default::default()
+                    },
+                )
+            })
             .collect()
     }
 
@@ -256,6 +300,48 @@ mod tests {
         assert!(item.get("time_since_update").is_none());
         // No alias key when none configured.
         assert!(item.get("alias").is_none());
+    }
+
+    #[test]
+    fn cumul_errors_and_drops_are_reported() {
+        let prev = HashMap::from([(
+            "eth0".to_string(),
+            Counters {
+                rx: 1_000,
+                tx: 2_000,
+                err_in: 10,
+                err_out: 0,
+                drops: Some((4, 8)),
+            },
+        )]);
+        let cur = HashMap::from([(
+            "eth0".to_string(),
+            Counters {
+                rx: 3_000,
+                tx: 2_500,
+                err_in: 16,
+                err_out: 2,
+                drops: Some((6, 8)),
+            },
+        )]);
+        let (items, _) = step(prev, cur, 2.0, &no_meta(), &no_alias());
+        let item = &items[0];
+        // Cumulative = raw current counters, rates = delta / elapsed.
+        assert_eq!(item["bytes_recv_cumul"], 3_000);
+        assert_eq!(item["bytes_sent_cumul"], 2_500);
+        assert_eq!(item["errors_in"], 3.0);
+        assert_eq!(item["errors_out"], 1.0);
+        assert_eq!(item["dropped_in"], 1.0);
+        assert_eq!(item["dropped_out"], 0.0);
+    }
+
+    #[test]
+    fn drops_are_omitted_when_the_platform_has_none() {
+        let prev = counters(&[("eth0", 0, 0)]);
+        let cur = counters(&[("eth0", 1, 1)]);
+        let (items, _) = step(prev, cur, 1.0, &no_meta(), &no_alias());
+        assert!(items[0].get("dropped_in").is_none());
+        assert_eq!(items[0]["errors_in"], 0.0);
     }
 
     #[test]
@@ -319,7 +405,7 @@ mod tests {
         let (items, _) = step(prev, cur, 1.0, &meta, &alias);
         assert_eq!(items[0]["is_up"], true);
         assert_eq!(items[0]["speed"], 1_048_576_000u64);
-        assert_eq!(items[0]["bytes_speed_rate_per_sec"], 62_500_000u64);
+        assert_eq!(items[0]["bytes_speed_rate_per_sec"], 62_500_000.0);
         assert_eq!(items[0]["alias"], "LAN");
     }
 }
