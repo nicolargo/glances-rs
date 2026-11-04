@@ -6,8 +6,9 @@ pub mod security;
 
 use crate::alerts::effective_global;
 use crate::collector::{EnsureError, ensure_plugin};
+use crate::config::Thresholds;
 use crate::plugins::PluginId;
-use crate::plugins::fields::{FieldInfo, fields};
+use crate::plugins::fields::{FieldInfo, alert_fields, fields};
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
@@ -28,7 +29,9 @@ pub fn api_router(app: Arc<AppState>) -> Router {
         .route("/api/5/all", get(all_stats))
         .route("/api/5/alert", get(alert_history))
         .route("/api/5/all/info", get(all_info))
+        .route("/api/5/all/limits", get(all_limits))
         .route("/api/5/{plugin}/info", get(plugin_info))
+        .route("/api/5/{plugin}/limits", get(plugin_limits))
         .route("/api/5/{plugin}", get(plugin_stats))
         .with_state(app.clone());
     security::apply_security(routes, app)
@@ -194,7 +197,12 @@ fn field_schema(app: &AppState, id: PluginId, fi: &FieldInfo) -> Value {
 /// `[alerts] use_builtin_defaults` is on; `None` otherwise. Per-item overrides
 /// are not reflected — `/info` is a per-field schema.
 fn configured_thresholds(app: &AppState, id: PluginId, field: &str) -> Option<Value> {
-    let t = effective_global(&app.config, id, field)?;
+    thresholds_json(&effective_global(&app.config, id, field)?)
+}
+
+/// `{careful?, warning?, critical?}` with only the limits set, or `None` when
+/// none is.
+fn thresholds_json(t: &Thresholds) -> Option<Value> {
     let mut m = Map::new();
     if let Some(c) = t.careful {
         m.insert("careful".into(), json!(c));
@@ -206,6 +214,66 @@ fn configured_thresholds(app: &AppState, id: PluginId, field: &str) -> Option<Va
         m.insert("critical".into(), json!(cr));
     }
     (!m.is_empty()).then_some(Value::Object(m))
+}
+
+/// `GET /api/5/{plugin}/limits` — the thresholds in force for the plugin's
+/// watched fields, keyed by field (`{ "percent": {careful?, warning?,
+/// critical?} }`); `{}` when none applies. Per-item overrides, if any, sit
+/// under `_per_item` as `{ item: { field: {…} } }`, omitted when empty.
+/// Inert like `/info`: static + config only, never wakes a collector, never
+/// `503`.
+async fn plugin_limits(State(app): State<Arc<AppState>>, Path(name): Path<String>) -> Response {
+    let Some(id) = PluginId::parse(&name).filter(|id| app.is_registered(*id)) else {
+        return not_found(&name);
+    };
+    Json(Value::Object(limits_for(&app, id))).into_response()
+}
+
+/// `GET /api/5/all/limits` — `{ plugin: limits }` for every registered plugin
+/// that has at least one limit in force (the `/all` analogue of
+/// `/{plugin}/limits`; plugins with none are left out, as Glances does).
+async fn all_limits(State(app): State<Arc<AppState>>) -> Json<Value> {
+    let mut out = Map::new();
+    for id in PluginId::ALL {
+        if !app.is_registered(id) {
+            continue;
+        }
+        let limits = limits_for(&app, id);
+        if !limits.is_empty() {
+            out.insert(id.as_str().to_owned(), Value::Object(limits));
+        }
+    }
+    Json(Value::Object(out))
+}
+
+/// The limits in force for `id`: global per field (configured, else the
+/// opt-in built-ins), plus `_per_item` overrides. Only watched fields count —
+/// a threshold on any other field never drives `_levels`.
+fn limits_for(app: &AppState, id: PluginId) -> Map<String, Value> {
+    let mut out = Map::new();
+    for fi in alert_fields(id) {
+        if let Some(t) = configured_thresholds(app, id, fi.field) {
+            out.insert(fi.field.to_owned(), t);
+        }
+    }
+    let mut per_item = Map::new();
+    if let Some(pc) = app.config.plugins.get(id.as_str()) {
+        for (item, by_field) in &pc.thresholds_by_item {
+            let mut fields_obj = Map::new();
+            for fi in alert_fields(id) {
+                if let Some(t) = by_field.get(fi.field).and_then(thresholds_json) {
+                    fields_obj.insert(fi.field.to_owned(), t);
+                }
+            }
+            if !fields_obj.is_empty() {
+                per_item.insert(item.clone(), Value::Object(fields_obj));
+            }
+        }
+    }
+    if !per_item.is_empty() {
+        out.insert("_per_item".into(), Value::Object(per_item));
+    }
+    out
 }
 
 fn not_found(name: &str) -> Response {
