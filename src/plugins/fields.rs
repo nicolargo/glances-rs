@@ -5,6 +5,7 @@
 //! data is `&'static` — zero runtime allocation (footprint mandate).
 
 use super::PluginId;
+use crate::config::Thresholds;
 
 /// Threshold ladder direction. `High`: alert as the value rises; `Low`: alert
 /// as it falls. Every current field is `High`; `Low` is engine-complete.
@@ -68,6 +69,9 @@ pub struct FieldInfo {
     pub direction: Direction,
     pub prominent: bool,
     pub normalize_by: Option<&'static str>,
+    /// Glances v5's built-in `default_thresholds` `(careful, warning, critical)`,
+    /// applied only when `[alerts] use_builtin_defaults` is on.
+    pub defaults: Option<(f64, f64, f64)>,
 }
 
 impl FieldInfo {
@@ -84,6 +88,7 @@ impl FieldInfo {
             direction: Direction::High,
             prominent: false,
             normalize_by: None,
+            defaults: None,
         }
     }
     const fn short(mut self, s: &'static str) -> Self {
@@ -109,6 +114,10 @@ impl FieldInfo {
         self.prominent = prominent;
         self
     }
+    const fn defaults(mut self, careful: f64, warning: f64, critical: f64) -> Self {
+        self.defaults = Some((careful, warning, critical));
+        self
+    }
     const fn normalize(mut self, by: &'static str) -> Self {
         self.normalize_by = Some(by);
         self
@@ -118,7 +127,7 @@ impl FieldInfo {
 const MEM_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("total", "Total physical memory available.", Unit::Bytes),
     FieldInfo::new("available", "Actual amount of available memory that can be given instantly to processes that request more memory; calculated by summing different memory values depending on the platform (e.g. free + buffers + cached on Linux). Suitable for monitoring actual memory usage in a cross-platform fashion.", Unit::Bytes).short("avail"),
-    FieldInfo::new("percent", "Percentage usage calculated as (total - available) / total * 100.", Unit::Percent).watched_high(true),
+    FieldInfo::new("percent", "Percentage usage calculated as (total - available) / total * 100.", Unit::Percent).watched_high(true).defaults(50.0, 70.0, 90.0),
     FieldInfo::new("used", "Memory used, calculated differently depending on the platform and designed for informational purposes only.", Unit::Bytes),
     FieldInfo::new("free", "Memory not being used at all (zeroed) that is readily available; note that this does not reflect the actual memory available — use `available` instead.", Unit::Bytes),
     FieldInfo::new("active", "(UNIX) Memory currently in use or very recently used, resident in RAM.", Unit::Bytes),
@@ -130,16 +139,16 @@ const MEM_FIELDS: &[FieldInfo] = &[
 ];
 
 const CPU_FIELDS: &[FieldInfo] = &[
-    FieldInfo::new("total", "Sum of all CPU percentages (except idle).", Unit::Percent).watched_high(true),
-    FieldInfo::new("system", "Percent time spent in kernel space. System CPU time is the time spent running code in the operating system kernel.", Unit::Percent).watched_high(false),
-    FieldInfo::new("user", "Percent time spent in user space. User CPU time is the time spent on the processor running the program's code (or code in libraries).", Unit::Percent).watched_high(false),
-    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(true),
+    FieldInfo::new("total", "Sum of all CPU percentages (except idle).", Unit::Percent).watched_high(true).defaults(50.0, 70.0, 90.0),
+    FieldInfo::new("system", "Percent time spent in kernel space. System CPU time is the time spent running code in the operating system kernel.", Unit::Percent).watched_high(false).defaults(50.0, 70.0, 90.0),
+    FieldInfo::new("user", "Percent time spent in user space. User CPU time is the time spent on the processor running the program's code (or code in libraries).", Unit::Percent).watched_high(false).defaults(50.0, 70.0, 90.0),
+    FieldInfo::new("iowait", "(Linux) Percent time spent by the CPU waiting for I/O operations to complete.", Unit::Percent).watched_high(false).defaults(50.0, 70.0, 90.0),
     FieldInfo::new("idle", "Percent of CPU not used by any program. Every program or task that runs occupies a certain amount of processing time on the CPU; when the CPU has completed all tasks it is idle.", Unit::Percent),
     FieldInfo::new("irq", "(Linux and BSD) Percent time spent servicing hardware and software interrupts.", Unit::Percent),
     FieldInfo::new("nice", "(UNIX) Percent time occupied by user-level processes with a positive nice value (processes that have been niced down).", Unit::Percent),
-    FieldInfo::new("steal", "(Linux) Percentage of time a virtual CPU waits for a real CPU while the hypervisor is servicing another virtual processor.", Unit::Percent).watched_high(false),
+    FieldInfo::new("steal", "(Linux) Percentage of time a virtual CPU waits for a real CPU while the hypervisor is servicing another virtual processor.", Unit::Percent).watched_high(false).defaults(5.0, 15.0, 30.0),
     FieldInfo::new("guest", "(Linux) Time spent running a virtual CPU for guest operating systems under the control of the Linux kernel.", Unit::Percent),
-    FieldInfo::new("ctx_switches", "Number of context switches (voluntary + involuntary) per second. A context switch is the procedure a CPU follows to change from one task to another while ensuring the tasks do not conflict.", Unit::Number).rate().watched_high(false).normalize("cpucore").short("ctx_sw"),
+    FieldInfo::new("ctx_switches", "Number of context switches (voluntary + involuntary) per second. A context switch is the procedure a CPU follows to change from one task to another while ensuring the tasks do not conflict.", Unit::Number).rate().watched_high(false).defaults(25000.0, 37500.0, 50000.0).normalize("cpucore").short("ctx_sw"),
     FieldInfo::new("interrupts", "Number of interrupts per second.", Unit::Number).rate().short("inter"),
     FieldInfo::new("soft_interrupts", "Number of software interrupts per second. Always 0 on Windows and SunOS.", Unit::Number).rate().short("sw_int"),
     FieldInfo::new("syscalls", "Number of system calls per second. Always 0 on Linux.", Unit::Number).rate(),
@@ -148,8 +157,8 @@ const CPU_FIELDS: &[FieldInfo] = &[
 
 const LOAD_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("min1", "Average number of processes waiting in the run-queue plus those currently executing, over 1 minute.", Unit::Float).short("1 min"),
-    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).watched_high(false).normalize("cpucore").short("5 min"),
-    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).watched_high(true).normalize("cpucore").short("15 min"),
+    FieldInfo::new("min5", "Average number of processes waiting in the run-queue plus those currently executing, over 5 minutes.", Unit::Float).watched_high(false).defaults(0.7, 1.0, 5.0).normalize("cpucore").short("5 min"),
+    FieldInfo::new("min15", "Average number of processes waiting in the run-queue plus those currently executing, over 15 minutes.", Unit::Float).watched_high(true).defaults(0.7, 1.0, 5.0).normalize("cpucore").short("15 min"),
     FieldInfo::new("cpucore", "Total number of logical CPU cores.", Unit::Number).internal(),
 ];
 
@@ -176,7 +185,7 @@ const MEMSWAP_FIELDS: &[FieldInfo] = &[
     FieldInfo::new("total", "Total swap memory.", Unit::Bytes),
     FieldInfo::new("used", "Used swap memory.", Unit::Bytes),
     FieldInfo::new("free", "Free swap memory.", Unit::Bytes),
-    FieldInfo::new("percent", "Used swap memory as a percentage of total.", Unit::Percent).watched_high(true),
+    FieldInfo::new("percent", "Used swap memory as a percentage of total.", Unit::Percent).watched_high(true).defaults(60.0, 80.0, 95.0),
     FieldInfo::new("sin", "Bytes the system has swapped in from disk (per second — v4 reports the cumulative counter; v5 converts it to a rate).", Unit::BytesPerSec).rate().watched_high(false),
     FieldInfo::new("sout", "Bytes the system has swapped out to disk (per second — v4 reports the cumulative counter; v5 converts it to a rate).", Unit::BytesPerSec).rate().watched_high(false),
 ];
@@ -207,7 +216,8 @@ const FS_FIELDS: &[FieldInfo] = &[
         "Filesystem usage as a percentage of total size.",
         Unit::Percent,
     )
-    .watched_high(false),
+    .watched_high(false)
+    .defaults(70.0, 80.0, 90.0),
     FieldInfo::new(
         "options",
         "Mount options string (comma-separated).",
@@ -320,21 +330,19 @@ const DISKIO_FIELDS: &[FieldInfo] = &[
 ];
 
 const NETWORK_FIELDS: &[FieldInfo] = &[
-    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT)
-        .pk()
-        .short("interface"),
+    FieldInfo::new("interface_name", "Network interface name.", Unit::StringT).pk(),
     FieldInfo::new(
         "bytes_recv",
         "Bytes received per second.",
         Unit::BytesPerSec,
     )
     .rate()
-    .watched_high(false)
+    .watched_high(false).defaults(0.7, 0.8, 0.9)
     .normalize("bytes_speed_rate_per_sec")
     .short("Rx/s"),
     FieldInfo::new("bytes_sent", "Bytes sent per second.", Unit::BytesPerSec)
         .rate()
-        .watched_high(false)
+        .watched_high(false).defaults(0.7, 0.8, 0.9)
         .normalize("bytes_speed_rate_per_sec")
         .short("Tx/s"),
     FieldInfo::new(
@@ -384,11 +392,22 @@ const NETWORK_FIELDS: &[FieldInfo] = &[
     ),
     FieldInfo::new(
         "bytes_speed_rate_per_sec",
-        "Estimated per-direction bandwidth capacity in bytes/s. Computed from the interface link speed (Mbit/s) under a full-duplex split assumption: speed_mbits * 1e6 / 8 / 2. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
+        "Per-direction bandwidth capacity in bytes/s. Computed from net_if_stats().speed (Mbit/s), each direction getting the full link speed: speed_mbits * 1e6 / 8. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
         Unit::BytesPerSec,
     ),
     FieldInfo::new("hidden", "Display-filter flag mirroring Glances v5's hide_zero filter. glances-rs filters interfaces/disks by name (removing them), so no value-based hiding applies and this is always false; emitted for payload-shape parity.", Unit::Bool).internal(),
 ];
+
+/// Glances v5's built-in thresholds for `field`, if it has any. Only consulted
+/// when `[alerts] use_builtin_defaults` is on (see `alerts::effective_global`).
+pub fn builtin_thresholds(id: PluginId, field: &str) -> Option<Thresholds> {
+    let (careful, warning, critical) = fields(id).iter().find(|f| f.field == field)?.defaults?;
+    Some(Thresholds {
+        careful: Some(careful),
+        warning: Some(warning),
+        critical: Some(critical),
+    })
+}
 
 /// Every field a plugin emits, in stable schema order.
 pub fn fields(id: PluginId) -> &'static [FieldInfo] {
@@ -428,7 +447,7 @@ mod tests {
             (PluginId::Cpu, "total", true, None),
             (PluginId::Cpu, "system", false, None),
             (PluginId::Cpu, "user", false, None),
-            (PluginId::Cpu, "iowait", true, None),
+            (PluginId::Cpu, "iowait", false, None),
             (PluginId::Cpu, "steal", false, None),
             (PluginId::Cpu, "ctx_switches", false, Some("cpucore")),
             (PluginId::Load, "min5", false, Some("cpucore")),

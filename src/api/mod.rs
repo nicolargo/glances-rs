@@ -4,6 +4,7 @@
 
 pub mod security;
 
+use crate::alerts::effective_global;
 use crate::collector::{EnsureError, ensure_plugin};
 use crate::plugins::PluginId;
 use crate::plugins::fields::{FieldInfo, fields};
@@ -188,11 +189,12 @@ fn field_schema(app: &AppState, id: PluginId, fi: &FieldInfo) -> Value {
     Value::Object(m)
 }
 
-/// The operator's configured global thresholds for `field` (`Some` limits
-/// only), or `None` when unconfigured. Per-item overrides are not reflected —
-/// `/info` is a per-field schema.
+/// The global thresholds in force for `field` (`Some` limits only): the
+/// operator's configured block, else the built-in defaults when
+/// `[alerts] use_builtin_defaults` is on; `None` otherwise. Per-item overrides
+/// are not reflected — `/info` is a per-field schema.
 fn configured_thresholds(app: &AppState, id: PluginId, field: &str) -> Option<Value> {
-    let t = app.config.plugins.get(id.as_str())?.thresholds.get(field)?;
+    let t = effective_global(&app.config, id, field)?;
     let mut m = Map::new();
     if let Some(c) = t.careful {
         m.insert("careful".into(), json!(c));

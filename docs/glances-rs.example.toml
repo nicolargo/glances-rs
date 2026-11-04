@@ -57,3 +57,17 @@ guard_timeout = 5.0
 # Per-interface display alias (added to an item only when configured):
 # [plugins.network.alias]
 # eth0 = "LAN"
+
+# Alerting (docs/api.md §8). Off by default: with no thresholds configured,
+# `_levels` is `{}` and /api/5/alert is `[]`.
+#
+# [alerts]
+# history_size         = 200
+# min_duration_seconds = 5.0
+# # Opt-in: use Glances v5's built-in thresholds (e.g. mem.percent 50/70/90)
+# # for every watched field without a configured global threshold.
+# use_builtin_defaults = false
+#
+# [plugins.mem.thresholds.percent]   # replaces the built-in ladder for mem.percent
+# warning  = 75.0
+# critical = 90.0

@@ -398,14 +398,14 @@ mod tests {
             IfaceMeta {
                 is_up: Some(true),
                 speed: Some(1_048_576_000),
-                bytes_speed_rate_per_sec: Some(62_500_000),
+                bytes_speed_rate_per_sec: Some(125_000_000),
             },
         )]);
         let alias = HashMap::from([("eth0".to_string(), "LAN".to_string())]);
         let (items, _) = step(prev, cur, 1.0, &meta, &alias);
         assert_eq!(items[0]["is_up"], true);
         assert_eq!(items[0]["speed"], 1_048_576_000u64);
-        assert_eq!(items[0]["bytes_speed_rate_per_sec"], 62_500_000.0);
+        assert_eq!(items[0]["bytes_speed_rate_per_sec"], 125_000_000.0);
         assert_eq!(items[0]["alias"], "LAN");
     }
 }

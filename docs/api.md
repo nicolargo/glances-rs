@@ -22,10 +22,11 @@
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
 `/api/5/token` (Basic auth only), `/api/5/config`. `/api/5/limits` is also
-deliberately not served: glances-rs ships no built-in default thresholds
-(§8 Alerting is config-only), so there is no global limits table to expose —
-the per-field `default_thresholds` already surfaced in `/info` (§9) is the
-closest equivalent, and it reflects only what the operator configured.
+deliberately not served: by default glances-rs ships no built-in thresholds
+(§8 Alerting is config-only, with an opt-in `[alerts] use_builtin_defaults`),
+so there is no global limits table to expose — the per-field
+`default_thresholds` surfaced in `/info` (§9) is the closest equivalent; it
+reflects the thresholds in force (configured, or the opt-in built-ins).
 
 **Security (ARCHITECTURE.md §7).** The `/api/5/*` routes sit behind, in order,
 a CORS layer, a trusted-`Host` check and HTTP Basic auth. Added status codes:
@@ -46,7 +47,7 @@ check, no wake-up.
 |---|---|---|
 | Known plugin, no data yet | `200` with `null` body | **Waits** for the first collection cycle; `503` if it does not arrive within the guard timeout. A `200` always carries real data. |
 | Auth | Basic + Bearer token (`/token`) | Basic only (v1). |
-| `_levels` (alert thresholds) | Per-field threshold metadata | Populated per §8 Alerting. `{}` when no threshold is configured for that plugin (the default, config-only — no built-in thresholds). |
+| `_levels` (alert thresholds) | Per-field threshold metadata | Populated per §8 Alerting. `{}` when no threshold is configured for that plugin (the default, config-only — no built-in thresholds unless `[alerts] use_builtin_defaults = true`). |
 | Platform-specific fields | Present per platform/psutil | **Full field parity on Linux** (the primary target); macOS/Windows degrade to the portable subset `sysinfo` exposes. Clients treat absent fields as "not available", exactly as with Glances' platform-specific fields. |
 
 > **Field parity (Linux).** `glances-rs` reads `/proc/stat`, `/proc/meminfo`,
@@ -206,7 +207,7 @@ One element per interface; primary key `interface_name`:
       "dropped_in":     0.0,
       "dropped_out":    0.0,
       "speed":          0,
-      "bytes_speed_rate_per_sec": 62500000.0,
+      "bytes_speed_rate_per_sec": 125000000.0,
       "is_up":          true,
       "hidden":         false
     }
@@ -247,9 +248,9 @@ One element per interface; primary key `interface_name`:
   (`sysinfo` does not expose them).
 - `bytes_speed_rate_per_sec` (a float, like Glances) — the per-direction link capacity in bytes/s,
   used as the `normalize_by` divisor for the `bytes_recv`/`bytes_sent` alert
-  thresholds (§8.1): `speed_mbits × 1e6 / 8 / 2` (decimal Mbit/s → bytes/s,
-  halved for full-duplex per-direction capacity — note this is a different
-  scale than `speed`, which uses the binary 1048576 factor). **Linux only**,
+  thresholds (§8.1): `speed_mbits × 1e6 / 8` (decimal Mbit/s → bytes/s; each
+  direction gets the full link speed, as in Glances v5 — note this is a
+  different scale than `speed`, which uses the binary 1048576 factor). **Linux only**,
   read from `/sys/class/net/<iface>/speed`; `0` when the link speed is
   unknown, the interface is down, or off-Linux (the field is present and `0`
   on Linux, entirely absent on macOS/Windows, matching `is_up`/`speed`).
@@ -453,7 +454,8 @@ Closes the last payload-parity gap with Glances v5: per-field `_levels`
 decoration and the `/api/5/alert` event journal. **Conservatism on
 defaults:** there are **no built-in thresholds**. With the default config,
 every plugin's `_levels` is `{}` and `/api/5/alert` returns `[]` — alerting
-is entirely opt-in via configured thresholds.
+is entirely opt-in via configured thresholds, or via
+`[alerts] use_builtin_defaults = true` (below).
 
 ### 8.1 Configuration
 
@@ -488,7 +490,22 @@ min_duration_seconds = 10.0
 [alerts]
 history_size          = 200   # default; max retained events (ring buffer)
 min_duration_seconds  = 5.0   # default; global hysteresis window
+use_builtin_defaults  = false # default; true = Glances v5's built-in thresholds
 ```
+
+**Opt-in built-in thresholds.** With `use_builtin_defaults = true`, every
+watched field that has no configured *global* threshold falls back to the
+Glances v5 default ladder (careful / warning / critical): `cpu.total`,
+`user`, `system`, `iowait` 50 / 70 / 90; `cpu.steal` 5 / 15 / 30;
+`cpu.ctx_switches` 25000 / 37500 / 50000 (per core); `load.min5` and
+`min15` 0.7 / 1 / 5 (per core); `mem.percent` 50 / 70 / 90;
+`memswap.percent` 60 / 80 / 95; `fs.percent` 70 / 80 / 90;
+`network.bytes_recv` and `bytes_sent` 0.7 / 0.8 / 0.9 (of link capacity).
+A configured `[plugins.<p>.thresholds.<field>]` block **replaces** the
+built-in ladder as a whole (a partial block never mixes with built-in
+limits); `thresholds_by_item` still merges over whichever global is in
+force, and that merged ladder is validated at startup like any other. The
+flag is off by default: an unconfigured install stays silent.
 
 Any subset of `careful`/`warning`/`critical` is valid. Declared and merged
 threshold sets are validated at startup: all present limits must be finite
@@ -623,20 +640,25 @@ key is present only when it applies to that field, absent otherwise:
 | `default_thresholds` | `{careful?, warning?, critical?}` | on watched fields, only when configured (below) |
 | `normalize_by` | string | on fields compared as `value / divisor` (`cpucore` or `bytes_speed_rate_per_sec`) |
 
-**Omitted by design.** Glances also emits `history: true` and
-`strict_thresholds: true` on some fields. glances-rs implements neither a
-per-plugin history route nor strict-threshold semantics, so `/info` never
-emits those keys — it does not advertise a capability the server lacks.
+**Omitted by design.** Glances also emits `history: true`,
+`strict_thresholds: true`, `top_processes_sort` and `threshold_field` on some
+fields. glances-rs implements no per-plugin history route, no
+strict-threshold semantics, no process plugin to sort and no alternative
+threshold key names, so `/info` never emits those keys — it does not
+advertise a capability the server lacks.
 
-**`default_thresholds` reflects config, not built-ins.** Glances ships
+**`default_thresholds` reflects the thresholds in force.** Glances ships
 built-in default thresholds and always emits them on watched fields.
-glances-rs ships **none** (§8: config-only alerting, the deliberate v0.3.0
-conservatism divergence). For `/info`, `default_thresholds`:
+glances-rs ships none unless `[alerts] use_builtin_defaults = true` (§8.1;
+the deliberate v0.3.0 conservatism divergence). For `/info`,
+`default_thresholds`:
 
 - reflects the operator's **configured global thresholds**
-  (`[plugins.<p>].thresholds.<field>`, §8.1) for that field;
-- is emitted only when configured — the key is **absent** otherwise, even on
-  a `watched: true` field (alertable but unconfigured is a normal state);
+  (`[plugins.<p>].thresholds.<field>`, §8.1) for that field, else the
+  built-in ladder when `use_builtin_defaults` is on;
+- is emitted only when a ladder is in force — the key is **absent**
+  otherwise, even on a `watched: true` field (alertable but unconfigured is
+  a normal state);
 - includes only the limits set to `Some` (a partial `[careful/warning/
   critical]` configuration yields a partial object);
 - does **not** reflect `thresholds_by_item` overrides — `/info` is a
@@ -711,7 +733,7 @@ still gets a full, authored `description`.
 ```
 
 `percent` has no `default_thresholds` key under the default config (no
-built-in thresholds ship); configuring
+built-in thresholds unless `use_builtin_defaults` is on); configuring
 `[plugins.mem.thresholds.percent]` adds it, partial-aware, per the rules
 above.
 
@@ -722,7 +744,6 @@ above.
   "interface_name": {
     "description": "Network interface name.",
     "unit": "string",
-    "short_name": "interface",
     "primary_key": true
   },
   "bytes_recv": {
@@ -763,7 +784,7 @@ above.
     "unit": "bitpersecond"
   },
   "bytes_speed_rate_per_sec": {
-    "description": "Estimated per-direction bandwidth capacity in bytes/s. Computed from the interface link speed (Mbit/s) under a full-duplex split assumption: speed_mbits * 1e6 / 8 / 2. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
+    "description": "Per-direction bandwidth capacity in bytes/s. Computed from net_if_stats().speed (Mbit/s), each direction getting the full link speed: speed_mbits * 1e6 / 8. Returns 0 when the OS does not report a link speed (loopback, virtual interfaces) — in which case threshold normalisation is skipped for bytes_recv / bytes_sent.",
     "unit": "bytespers"
   },
   "hidden": {

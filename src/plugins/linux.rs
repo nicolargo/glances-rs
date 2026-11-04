@@ -200,7 +200,7 @@ pub struct IfaceMeta {
     /// the Mbps value reported by the kernel by 1048576).
     pub speed: u64,
     /// Per-direction bandwidth capacity in bytes/s for `normalize_by` (spec
-    /// §4.6): `mbps * 1e6 / 8 / 2`. `0` when the link speed is unknown.
+    /// §4.6): `mbps * 1e6 / 8` (each direction gets the full link speed, as in Glances v5). `0` when the link speed is unknown.
     pub bytes_speed_rate_per_sec: u64,
 }
 
@@ -208,7 +208,7 @@ pub struct IfaceMeta {
 /// `bytes_speed_rate_per_sec`. Note this uses 1e6 (not the 1_048_576 of the
 /// `speed` field) — Glances deliberately scales the two fields differently.
 pub(crate) fn speed_capacity_bytes_per_dir(mbps: u64) -> u64 {
-    mbps * 1_000_000 / 8 / 2
+    mbps * 1_000_000 / 8
 }
 
 /// Cumulative `(rx_dropped, tx_dropped)` packets of one interface, from
@@ -671,8 +671,8 @@ ID=ubuntu
 
     #[test]
     fn bytes_speed_rate_per_sec_is_decimal_per_direction() {
-        // 1000 Mbit/s full-duplex -> 1000 * 1e6 / 8 / 2 = 62_500_000 B/s per dir.
-        assert_eq!(super::speed_capacity_bytes_per_dir(1000), 62_500_000);
+        // 1000 Mbit/s -> 1000 * 1e6 / 8 = 125_000_000 B/s, full speed per direction.
+        assert_eq!(super::speed_capacity_bytes_per_dir(1000), 125_000_000);
         // unknown / down link -> 0.
         assert_eq!(super::speed_capacity_bytes_per_dir(0), 0);
     }
