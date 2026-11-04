@@ -104,3 +104,29 @@ async fn alert_route_never_wakes_a_collector() {
     // Like the probes (§6.4), the journal route is inert.
     assert_eq!(app.active_collectors().await, 0);
 }
+
+#[tokio::test]
+async fn incidents_route_is_empty_and_initializing_before_any_cycle() {
+    // Inert: asking for incidents must not wake a collector.
+    let router = build_router(AppState::new(Config::default()));
+    let (status, body) = get_json(router, "/api/5/alert/incidents").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        serde_json::json!({ "is_initializing": true, "incidents": [] })
+    );
+}
+
+#[tokio::test]
+async fn incidents_route_leaves_initializing_once_a_plugin_has_run() {
+    let router = build_router(AppState::new(config_mem_threshold()));
+    let (status, _) = get_json(router.clone(), "/api/5/mem").await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = get_json(router, "/api/5/alert/incidents").await;
+    assert_eq!(status, StatusCode::OK);
+    // Threshold is unreachable (critical = 100): warmed up, and an all-clear.
+    assert_eq!(
+        body,
+        serde_json::json!({ "is_initializing": false, "incidents": [] })
+    );
+}

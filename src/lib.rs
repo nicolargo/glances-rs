@@ -8,6 +8,7 @@ pub mod alerts;
 pub mod api;
 pub mod collector;
 pub mod config;
+pub mod incidents;
 pub mod plugins;
 pub mod server;
 pub mod state;

@@ -15,6 +15,7 @@ use crate::plugins::fields::{Direction, FieldInfo, alert_fields, builtin_thresho
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Alert severity. `Ok` is the default committed state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +74,9 @@ pub(crate) struct AlertState {
     pending_level: Option<Level>,
     pending_since: Option<Instant>,
     has_committed: bool,
+    /// ISO-8601 instant the alert left `ok` (kept across escalations, cleared
+    /// on recovery). The journal is a ring buffer; this is not.
+    committed_since: Option<String>,
 }
 
 /// A committed level change, the seed of an alert event.
@@ -202,6 +206,31 @@ pub(crate) fn iso8601_utc(t: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }
 
+/// Inverse of `iso8601_utc`: `YYYY-MM-DDTHH:MM:SSZ` -> Unix seconds, or `None`
+/// for anything else (the incident view then leaves the duration unknown).
+pub(crate) fn parse_iso8601_utc(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 20
+        || (b[4], b[7], b[10], b[13], b[16], b[19]) != (b'-', b'-', b'T', b':', b':', b'Z')
+    {
+        return None;
+    }
+    let num = |a: usize, z: usize| s.get(a..z)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (hh, mm, ss) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    if !((1..=12).contains(&m) && (1..=31).contains(&d) && hh < 24 && mm < 60 && ss < 61) {
+        return None;
+    }
+    // days_from_civil: (year, month, day) -> days since 1970-01-01.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hh * 3_600 + mm * 60 + ss)
+}
+
 type StateKey = (PluginId, Option<String>, String);
 
 struct Inner {
@@ -216,6 +245,9 @@ struct Inner {
 pub struct Alerts {
     inner: Mutex<Inner>,
     hostname: String,
+    /// Set by the first `observe` of any plugin: before that, the engine
+    /// cannot have produced anything (see `is_initializing`).
+    seen_cycle: AtomicBool,
 }
 
 impl Alerts {
@@ -238,6 +270,7 @@ impl Alerts {
                 last_seen: HashMap::new(),
             }),
             hostname,
+            seen_cycle: AtomicBool::new(false),
         }
     }
 
@@ -251,11 +284,51 @@ impl Alerts {
         self.inner.lock().unwrap().history.iter().cloned().collect()
     }
 
+    /// Alerts currently non-`ok`, keyed by `(plugin, key, field)`, with their
+    /// committed level and the instant they opened. Read from the engine's
+    /// unbounded state, so it outlives the journal's ring buffer.
+    pub(crate) fn ongoing(&self) -> crate::incidents::Ongoing {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .state
+            .iter()
+            .filter(|(_, st)| st.committed_level != Level::Ok)
+            .map(|((id, key, field), st)| {
+                (
+                    (id.as_str().to_owned(), key.clone(), field.clone()),
+                    (
+                        st.committed_level.as_str().to_owned(),
+                        st.committed_since.clone(),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// `true` until some plugin has completed a collection cycle: the engine
+    /// cannot have produced an event yet, so an empty incident list is not an
+    /// all-clear. glances-rs collects lazily (nothing runs while no client is
+    /// connected), so this stays `true` on a server nobody has queried.
+    pub fn is_initializing(&self) -> bool {
+        !self.seen_cycle.load(Ordering::Relaxed)
+    }
+
+    /// The journal collapsed into incidents (`/api/5/alert/incidents`).
+    pub fn incidents(&self) -> Value {
+        crate::incidents::incidents_payload(
+            &self.history(),
+            &self.ongoing(),
+            self.is_initializing(),
+            SystemTime::now(),
+        )
+    }
+
     /// One cycle's worth of alerting for `id`'s freshly collected `value`:
     /// rewrite `_levels` (raw, instantaneous) and append any committed level
     /// transitions to the journal. No-op for plugins with no alertable fields,
     /// or with no thresholds configured at all (the default).
     pub fn observe(&self, config: &Config, id: PluginId, value: &mut Value) {
+        self.seen_cycle.store(true, Ordering::Relaxed);
         // No alertable fields for this plugin (e.g. system, uptime): nothing to do.
         if alert_fields(id).next().is_none() {
             return;
@@ -359,6 +432,13 @@ impl Alerts {
             let st = inner.state.entry(sk).or_default();
             if let Some(tr) = reconcile(st, level, now, min_duration) {
                 let event = build_event(&self.hostname, id, key.as_deref(), af, &tr, raw, now_sys);
+                // Opening an alert stamps `committed_since`; an escalation
+                // keeps it; recovery clears it.
+                if tr.new == Level::Ok {
+                    st.committed_since = None;
+                } else if tr.previous == Level::Ok {
+                    st.committed_since = Some(iso8601_utc(now_sys));
+                }
                 inner.history.push_back(event);
                 while inner.history.len() > history_size {
                     inner.history.pop_front();
@@ -614,6 +694,82 @@ mod tests {
         let mut p2 = json!({ "percent": 95.0, "_levels": {} });
         alerts.observe(&config, PluginId::Mem, &mut p2);
         assert!(alerts.history().is_empty());
+    }
+
+    #[test]
+    fn committed_since_is_set_on_open_and_cleared_on_recovery() {
+        let config = cfg("[alerts]\nmin_duration_seconds = 0.0\n\
+             [plugins.mem.thresholds.percent]\nwarning = 50.0\ncritical = 90.0\n");
+        let alerts = Alerts::for_tests("host1");
+        let key = ("mem".to_string(), None, "percent".to_string());
+        assert!(alerts.ongoing().is_empty());
+
+        let mut p = json!({ "percent": 95.0, "_levels": {} });
+        alerts.observe(&config, PluginId::Mem, &mut p);
+        let (level, since) = alerts.ongoing()[&key].clone();
+        assert_eq!(level, "critical");
+        assert!(since.is_some_and(|s| parse_iso8601_utc(&s).is_some()));
+
+        // De-escalation keeps the alert open (and its start).
+        let mut p = json!({ "percent": 60.0, "_levels": {} });
+        alerts.observe(&config, PluginId::Mem, &mut p);
+        let (level, since) = alerts.ongoing()[&key].clone();
+        assert_eq!(level, "warning");
+        assert!(since.is_some());
+
+        // Recovery drops it from the engine's ongoing view.
+        let mut p = json!({ "percent": 10.0, "_levels": {} });
+        alerts.observe(&config, PluginId::Mem, &mut p);
+        assert!(alerts.ongoing().is_empty());
+    }
+
+    #[test]
+    fn incidents_survive_journal_eviction_through_engine_state() {
+        // Journal of 1: the opening event is evicted by the next transition,
+        // but the engine still knows when the alert opened.
+        let config = cfg("[alerts]\nhistory_size = 1\nmin_duration_seconds = 0.0\n\
+             [plugins.mem.thresholds.percent]\nwarning = 50.0\ncritical = 90.0\n");
+        let alerts = Alerts::for_tests("host1");
+        for percent in [95.0, 60.0] {
+            let mut p = json!({ "percent": percent, "_levels": {} });
+            alerts.observe(&config, PluginId::Mem, &mut p);
+        }
+        assert_eq!(alerts.history().len(), 1); // only critical -> warning left
+        let since = alerts.ongoing().values().next().unwrap().1.clone().unwrap();
+
+        let inc = alerts.incidents();
+        let i = &inc["incidents"][0];
+        assert_eq!(i["ongoing"], true);
+        assert_eq!(i["begin"], since.as_str());
+        assert_eq!(i["partial"], false); // not a lower bound: the engine knew
+        assert_eq!(inc["is_initializing"], false);
+    }
+
+    #[test]
+    fn is_initializing_until_any_plugin_cycle_is_observed() {
+        let alerts = Alerts::for_tests("host1");
+        assert!(alerts.is_initializing());
+        // Even a plugin with no thresholds configured counts as a cycle.
+        let mut p = json!({ "percent": 10.0, "_levels": {} });
+        alerts.observe(&cfg(""), PluginId::Mem, &mut p);
+        assert!(!alerts.is_initializing());
+    }
+
+    #[test]
+    fn parse_iso8601_round_trips_and_rejects_garbage() {
+        for secs in [0u64, 1_609_459_200, 1_781_440_496, 4_102_444_799] {
+            let s = iso8601_utc(UNIX_EPOCH + Duration::from_secs(secs));
+            assert_eq!(parse_iso8601_utc(&s), Some(secs as i64), "{s}");
+        }
+        for bad in [
+            "",
+            "nope",
+            "2026-06-14 12:34:56Z",
+            "2026-13-14T12:34:56Z",
+            "2026-06-14T12:34:56",
+        ] {
+            assert_eq!(parse_iso8601_utc(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
