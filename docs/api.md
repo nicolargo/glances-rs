@@ -14,6 +14,7 @@
 | `/api/5/{plugin}`        | GET    | The plugin's payload in the v5 envelope (§4) | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/{plugin}/info`   | GET    | The plugin's static field schema, keyed by field name (§9) | `200` always, `404` unknown/disabled plugin; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/all/info`        | GET    | Object: `{ "<plugin>": <field schema>, … }` for every registered plugin — the `/all` analogue of `/{plugin}/info` (§9.3) | `200` always; never `503` — read-only, does not wake or wait on a collector |
+| `/api/5/alert/incidents` | GET    | `{ "is_initializing": bool, "incidents": [...] }` — the alert journal collapsed into incidents (§8.5) | `200` always; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/{plugin}/limits` | GET    | The thresholds in force for the plugin's watched fields, keyed by field (§8.4) | `200` always, `404` unknown/disabled plugin; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/all/limits`      | GET    | Object: `{ "<plugin>": <limits>, … }` for every registered plugin that has at least one limit in force (§8.4) | `200` always (`{}` when none); never `503` |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
@@ -639,6 +640,59 @@ Read-only and **inert** (never wakes a collector, never `503`), like `/info`.
 - `/api/5/all/limits` is the `/all` analogue: only plugins with at least one
   limit appear, so the default config yields `{}`.
 - Not listed vs. Glances: `network.errors_in/out` and `cpu.dpc` (see §9).
+
+### 8.5 `GET /api/5/alert/incidents`
+
+The journal (§8.3) is a log of level *transitions*; this route collapses it
+into *incidents*, as Glances v5 does for its alert block. Read-only and
+**inert** (never wakes a collector, never `503`), like `/api/5/alert`, which
+stays the raw transition-log contract.
+
+```json
+{
+  "is_initializing": false,
+  "incidents": [
+    {
+      "plugin": "fs", "key": "/", "field": "percent",
+      "level": "critical",
+      "begin": "2026-11-04T17:16:43Z", "end": null,
+      "ongoing": true, "partial": false, "prominent": false,
+      "top": [], "top_sort": null,
+      "duration": "5m02s"
+    }
+  ]
+}
+```
+
+- An incident **opens** on the first transition to a non-`ok` level for a
+  `(plugin, key, field)` and **closes** on its transition back to `ok`
+  (`ongoing: false`, `end` set). Escalations and de-escalations update the
+  open incident; they never open a new one. `level` is monotonic: once
+  `critical`, it keeps reporting `critical`.
+- The engine's own state is the authority on what is still active: the journal
+  is a bounded ring buffer, so an alert can outlive its opening event. An
+  active alert the journal no longer covers still appears, with `begin` taken
+  from the engine (the instant it left `ok`). If the engine says an alert
+  recovered but no `→ ok` event survives, the incident is closed with
+  `end: null`.
+- `partial: true` — the opening transition was evicted and `begin` is only a
+  lower bound (or unknown, `null`). Not set when `begin` comes from the engine
+  or the first surviving event is `is_initial`.
+- `duration` — server-side string of at most 8 columns: `43s`, `2m58s`,
+  `1h13m`, `2d04h`; ongoing incidents measure to now, resolved ones to `end`;
+  prefixed `>` when `partial`; `null` when `begin` is unknown or in the
+  future.
+- Sorted ongoing first, newest first within each group.
+- `top` / `top_sort` are always `[]` / `null`: Glances fills them with the top
+  processes at alert time, and glances-rs has no process plugin. Kept for
+  payload-shape parity.
+- `is_initializing` — `true` until some plugin has completed a collection
+  cycle, i.e. while the engine cannot have produced anything: an empty
+  `incidents` list is then **not** an all-clear. Because collection is lazy
+  (ARCHITECTURE.md §3), a server nobody has queried stays `true`, and polling
+  this route does not wake anything — it flips once any other plugin route has
+  been requested. Glances' warm-up window (`warmup_cycles`) has no counterpart:
+  glances-rs relies on `min_duration` hysteresis instead.
 
 ## 9. `GET /api/5/{plugin}/info` — field schema (v0.4.0)
 

@@ -28,6 +28,7 @@ pub fn api_router(app: Arc<AppState>) -> Router {
         .route("/api/5/pluginslist", get(plugins_list))
         .route("/api/5/all", get(all_stats))
         .route("/api/5/alert", get(alert_history))
+        .route("/api/5/alert/incidents", get(alert_incidents))
         .route("/api/5/all/info", get(all_info))
         .route("/api/5/all/limits", get(all_limits))
         .route("/api/5/{plugin}/info", get(plugin_info))
@@ -108,6 +109,14 @@ async fn all_stats(State(app): State<Arc<AppState>>) -> Response {
 /// with a JSON array, `[]` when empty.
 async fn alert_history(State(app): State<Arc<AppState>>) -> Json<Vec<Value>> {
     Json(app.alerts.history())
+}
+
+/// `GET /api/5/alert/incidents` — the journal collapsed into incidents (one
+/// per alert episode, escalations folded in) as `{is_initializing,
+/// incidents}`. Read-only like `/alert`: never wakes or waits on a collector,
+/// never `503`.
+async fn alert_incidents(State(app): State<Arc<AppState>>) -> Json<Value> {
+    Json(app.alerts.incidents())
 }
 
 /// `GET /api/5/{plugin}` — single dynamic route for every plugin (§6.1).
