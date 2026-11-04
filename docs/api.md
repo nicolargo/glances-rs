@@ -14,6 +14,8 @@
 | `/api/5/{plugin}`        | GET    | The plugin's payload in the v5 envelope (§4) | `200`, `404` unknown plugin, `503` collection did not start in time |
 | `/api/5/{plugin}/info`   | GET    | The plugin's static field schema, keyed by field name (§9) | `200` always, `404` unknown/disabled plugin; never `503` — read-only, does not wake or wait on a collector |
 | `/api/5/all/info`        | GET    | Object: `{ "<plugin>": <field schema>, … }` for every registered plugin — the `/all` analogue of `/{plugin}/info` (§9.3) | `200` always; never `503` — read-only, does not wake or wait on a collector |
+| `/api/5/{plugin}/limits` | GET    | The thresholds in force for the plugin's watched fields, keyed by field (§8.4) | `200` always, `404` unknown/disabled plugin; never `503` — read-only, does not wake or wait on a collector |
+| `/api/5/all/limits`      | GET    | Object: `{ "<plugin>": <limits>, … }` for every registered plugin that has at least one limit in force (§8.4) | `200` always (`{}` when none); never `503` |
 | `/api/5/all`             | GET    | Object: `{ "<plugin>": <envelope>, … }` | `200` (possibly partial — see §3) |
 | `/api/5/pluginslist`     | GET    | Sorted array of plugin names: `["cpu","diskio","fs","load","mem","memswap","network","system","uptime"]` | `200` |
 | `/api/5/alert`           | GET    | Array of alert events, most-recent last (§8.3) | `200` always, `[]` when empty; never `503` — read-only, does not wake or wait on a collector |
@@ -21,12 +23,7 @@
 | `/healthz`               | GET    | Empty body                              | `200`; never wakes plugins, never requires auth |
 
 Glances v5 routes **not** implemented in v1 (deliberate, ARCHITECTURE.md §6.1):
-`/api/5/token` (Basic auth only), `/api/5/config`. `/api/5/limits` is also
-deliberately not served: by default glances-rs ships no built-in thresholds
-(§8 Alerting is config-only, with an opt-in `[alerts] use_builtin_defaults`),
-so there is no global limits table to expose — the per-field
-`default_thresholds` surfaced in `/info` (§9) is the closest equivalent; it
-reflects the thresholds in force (configured, or the opt-in built-ins).
+`/api/5/token` (Basic auth only), `/api/5/config`.
 
 **Security (ARCHITECTURE.md §7).** The `/api/5/*` routes sit behind, in order,
 a CORS layer, a trusted-`Host` check and HTTP Basic auth. Added status codes:
@@ -613,6 +610,35 @@ contract (ARCHITECTURE.md §3.2, §5.2): with sporadic polling, a breach
 shorter than `min_duration` of *sustained active* observation may simply
 never commit — no client was watching closely enough for an alert to be
 meaningful.
+
+### 8.4 `GET /api/5/{plugin}/limits` and `GET /api/5/all/limits`
+
+The thresholds **in force**, as Glances v5's `get_limits()` exposes them.
+Read-only and **inert** (never wakes a collector, never `503`), like `/info`.
+
+```json
+{
+  "percent": { "careful": 50.0, "warning": 70.0, "critical": 90.0 },
+  "_per_item": { "/home": { "percent": { "critical": 95.0 } } }
+}
+```
+
+- Keyed by field name, only for **watched** fields (a threshold configured on
+  a non-alertable field never drives `_levels`, so it is not listed). Each
+  value holds only the limits set (`careful`/`warning`/`critical`, partial
+  allowed).
+- A field's ladder is the operator's configured global block
+  (`[plugins.<p>.thresholds.<field>]`), else the Glances built-in ladder when
+  `[alerts] use_builtin_defaults` is on (§8.1), else the field is absent — the
+  same rule as `/info`'s `default_thresholds` (§9).
+- `_per_item` — `{ item: { field: {…} } }` for `thresholds_by_item` overrides,
+  as declared (not merged with the global); omitted when there is none.
+  Glances' `_categorical` group has no counterpart here.
+- `{}` for a plugin with no limit in force (the default config, or `system`/
+  `uptime`/`diskio`). `404` for an unknown or disabled plugin.
+- `/api/5/all/limits` is the `/all` analogue: only plugins with at least one
+  limit appear, so the default config yields `{}`.
+- Not listed vs. Glances: `network.errors_in/out` and `cpu.dpc` (see §9).
 
 ## 9. `GET /api/5/{plugin}/info` — field schema (v0.4.0)
 
